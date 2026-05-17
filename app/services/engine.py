@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Optional
 
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from ..database import SessionLocal
@@ -125,8 +126,9 @@ def run_ready_column(task_id: str):
                 phase_data = {"phase": phase_num, "name": phase_name, "content": content, "completed": True}
                 phases.append(phase_data)
 
-                task.story_phases = phases
+                task.story_phases = list(phases)  # new list object so SQLAlchemy detects the change
                 task.current_phase = phase_num
+                flag_modified(task, "story_phases")
                 db.commit()
 
                 if task.github_issue_number:
