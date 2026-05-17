@@ -1,0 +1,48 @@
+import logging
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from .database import init_db
+from .services import github as gh
+from .services import engine
+from .routers import auth, tasks, chat, webhooks
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s — %(message)s")
+log = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    log.info("Starting up...")
+    init_db()
+    gh.init_project()
+    engine.start_scheduler()
+    yield
+    log.info("Shutting down...")
+    engine.stop_scheduler()
+
+
+app = FastAPI(
+    title="Story Automation API",
+    version="1.0.0",
+    lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.include_router(auth.router)
+app.include_router(tasks.router)
+app.include_router(chat.router)
+app.include_router(webhooks.router)
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
