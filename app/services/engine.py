@@ -321,7 +321,7 @@ def run_review_comment(task_id: str, comment_texts: list[str], comment_ids: list
             db, task, "Agent",
             f"Story updated (cycle {cycle_num}/{task.max_review_cycles}).\n\n"
             f"**Summary of changes:** {change_summary}\n\n"
-            + ("Reviewer notified via email and GitHub." if reviewer_email else "Reviewer notified via GitHub."),
+            + ("Reviewer notified via email and GitHub." if reviewer_emails else "Reviewer notified via GitHub."),
         )
         _log_activity(db, task, f"Review cycle {cycle_num} complete", "REVIEW_COMMENT", output_s=change_summary)
         db.commit()
@@ -430,7 +430,7 @@ def _check_reviewer_comments(db: Session, task: models.Task):
         processed = set(str(c) for c in (task.processed_comment_ids or []))
         reviewer_usernames = set(
             u.lower() for u in (task.reviewer_github_usernames or [])
-        ) or {task.reviewer_github_username.lower()}
+        ) or ({task.reviewer_github_username.lower()} if task.reviewer_github_username else set())
         new_comments = [
             c for c in comments
             if c["user"]["login"].lower() in reviewer_usernames
