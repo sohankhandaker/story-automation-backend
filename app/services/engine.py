@@ -368,9 +368,13 @@ def _poll_github():
     """
     db = SessionLocal()
     try:
+        from sqlalchemy import or_
         tasks = db.query(models.Task).filter(
             models.Task.status.in_(["In Review", "Changes Requested"]),
-            models.Task.reviewer_github_username.isnot(None),
+            or_(
+                models.Task.reviewer_github_username.isnot(None),
+                models.Task.reviewer_github_usernames.isnot(None),
+            ),
             models.Task.github_issue_number.isnot(None),
         ).all()
 
@@ -394,9 +398,12 @@ def _check_reviewer_comments(db: Session, task: models.Task):
         db.commit()
 
         processed = set(str(c) for c in (task.processed_comment_ids or []))
+        reviewer_usernames = set(
+            u.lower() for u in (task.reviewer_github_usernames or [])
+        ) or {task.reviewer_github_username.lower()}
         new_comments = [
             c for c in comments
-            if c["user"]["login"].lower() == task.reviewer_github_username.lower()
+            if c["user"]["login"].lower() in reviewer_usernames
             and str(c["id"]) not in processed
         ]
 

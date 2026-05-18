@@ -37,35 +37,39 @@ def send_chat(
     db.commit()
     db.refresh(user_msg)
 
-    # ── Check for @mention (review request) ──
-    mention_match = MENTION_RE.search(body.message)
-    if mention_match and task.status == "In Review":
-        github_username = mention_match.group(1)
-        already_notified = (
-            task.reviewer_github_username
-            and task.reviewer_github_username.lower() == github_username.lower()
-        )
-
-        # Find reviewer name + email from user's reviewer list
-        reviewer_name = github_username
-        reviewer_email = None
-        for r in (current_user.reviewer_list or []):
-            if r.get("github_username", "").lower() == github_username.lower():
-                reviewer_name = r.get("name", github_username)
-                reviewer_email = r.get("email") or None
-                break
-
-        # Store reviewer on task
-        task.reviewer_github_username = github_username
-        task.reviewer_name = reviewer_name
-        db.commit()
-
-        # Post GitHub comment @mentioning reviewer with clear instructions
+    # ── Check for @mentions (review request — supports multiple) ──
+    mention_matches = MENTION_RE.findall(body.message)
+    if mention_matches and task.status == "In Review":
         user_cfg = cfg_for_user(current_user)
-        if already_notified:
-            agent_reply = f"@{github_username} has already been notified. They will see any new comments you leave here."
-        else:
-            agent_reply = f"Review requested. @{github_username} has been notified via GitHub."
+        already_notified = set(u.lower() for u in (task.reviewer_github_usernames or []))
+        new_usernames = [u for u in mention_matches if u.lower() not in already_notified]
+
+        # Merge into stored list
+        all_usernames = list(task.reviewer_github_usernames or [])
+        all_usernames += [u for u in mention_matches if u not in all_usernames]
+        task.reviewer_github_usernames = all_usernames
+        # Keep singular field as first reviewer for backward compat
+        task.reviewer_github_username = all_usernames[0] if all_usernames else None
+
+        replies = []
+        for github_username in mention_matches:
+            # Lookup name + email from reviewer list
+            reviewer_name = github_username
+            reviewer_email = None
+            for r in (current_user.reviewer_list or []):
+                if r.get("github_username", "").lower() == github_username.lower():
+                    reviewer_name = r.get("name", github_username)
+                    reviewer_email = r.get("email") or None
+                    break
+
+            if github_username in [u for u in mention_matches if u.lower() in already_notified]:
+                replies.append(f"@{github_username} was already notified.")
+                continue
+
+            # Update reviewer name on task for first/only reviewer
+            if not task.reviewer_name or task.reviewer_github_username == github_username:
+                task.reviewer_name = reviewer_name
+
             if task.github_issue_number:
                 try:
                     gh.add_comment(
@@ -84,10 +88,10 @@ def send_chat(
                         f"*Requested by @{current_user.github_username or current_user.name}*",
                         cfg=user_cfg,
                     )
+                    replies.append(f"@{github_username} notified via GitHub.")
                 except Exception as e:
-                    agent_reply += f"\n\n(GitHub notification failed: {e})"
+                    replies.append(f"@{github_username} — GitHub notification failed: {e}")
 
-            # ── Direct email notification to reviewer ────────────────────────
             if reviewer_email and task.github_issue_url:
                 sent = email_service.send_review_request(
                     reviewer_name=reviewer_name,
@@ -97,17 +101,15 @@ def send_chat(
                     github_issue_url=task.github_issue_url,
                 )
                 if sent:
-                    agent_reply += f"\n\nDirect email sent to **{reviewer_name}** ({reviewer_email})."
-                else:
-                    agent_reply += "\n\n*(Email notification not configured — reviewer notified via GitHub only.)*"
-            else:
-                agent_reply += "\n\n*(No email stored for this reviewer — notified via GitHub @mention only.)*"
+                    replies.append(f"Email sent to **{reviewer_name}** ({reviewer_email}).")
 
+        db.commit()
+        agent_reply = "Review requested.\n\n" + "\n".join(f"• {r}" for r in replies)
         agent_msg = models.ChatMessage(
             task_id=task.id,
             sender_type="Agent",
             content=agent_reply,
-            mentioned_github_username=github_username,
+            mentioned_github_username=", ".join(mention_matches),
         )
         db.add(agent_msg)
         db.commit()

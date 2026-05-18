@@ -42,6 +42,7 @@ class Task(Base):
     creator_id = Column(String, ForeignKey("users.id"))
     reviewer_github_username = Column(String, nullable=True)
     reviewer_name = Column(String, nullable=True)
+    reviewer_github_usernames = Column(JSON, default=list)  # all reviewers
     github_issue_url = Column(String, nullable=True)
     github_issue_number = Column(Integer, nullable=True)
     github_issue_node_id = Column(String, nullable=True)
