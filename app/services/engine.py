@@ -75,7 +75,7 @@ def _update_task_status(db: Session, task: models.Task, status: str, cfg=None):
 
 
 def _get_reviewer_email(db: Session, task: models.Task) -> Optional[str]:
-    """Look up the reviewer's email from the creator's stored reviewer list."""
+    """Look up the primary reviewer's email from the creator's stored reviewer list."""
     if not task.reviewer_github_username:
         return None
     creator = db.query(models.User).filter(models.User.id == task.creator_id).first()
@@ -85,6 +85,25 @@ def _get_reviewer_email(db: Session, task: models.Task) -> Optional[str]:
         if r.get("github_username", "").lower() == task.reviewer_github_username.lower():
             return r.get("email") or None
     return None
+
+
+def _get_all_reviewer_emails(db: Session, task: models.Task) -> list[tuple[str, str]]:
+    """Return [(github_username, email), ...] for all reviewers who have emails."""
+    usernames = list(task.reviewer_github_usernames or [])
+    if not usernames and task.reviewer_github_username:
+        usernames = [task.reviewer_github_username]
+    creator = db.query(models.User).filter(models.User.id == task.creator_id).first()
+    if not creator:
+        return []
+    lookup = {r.get("github_username", "").lower(): r for r in (creator.reviewer_list or [])}
+    result = []
+    for u in usernames:
+        r = lookup.get(u.lower(), {})
+        email = r.get("email")
+        name = r.get("name", u)
+        if email:
+            result.append((name, email))
+    return result
 
 
 def _get_creator(db: Session, task: models.Task) -> Optional[models.User]:
@@ -275,15 +294,26 @@ def run_review_comment(task_id: str, comment_texts: list[str], comment_ids: list
 
         _update_task_status(db, task, "In Review", cfg=cfg)
 
-        # ── Email re-notification to reviewer ────────────────────────────────
-        reviewer_email = _get_reviewer_email(db, task)
-        if reviewer_email and task.github_issue_url:
-            email_service.send_review_updated(
+        # ── Email all reviewers + notify creator ─────────────────────────────
+        reviewer_emails = _get_all_reviewer_emails(db, task)
+        for reviewer_name_e, reviewer_email_e in reviewer_emails:
+            if task.github_issue_url:
+                email_service.send_review_updated(
+                    reviewer_name=reviewer_name_e,
+                    reviewer_email=reviewer_email_e,
+                    story_title=task.title,
+                    github_issue_url=task.github_issue_url,
+                    change_summary=change_summary,
+                    cycle=cycle_num,
+                )
+        if creator and task.github_issue_url:
+            email_service.send_feedback_received(
+                creator_name=creator.name,
+                creator_email=creator.email,
                 reviewer_name=task.reviewer_name or task.reviewer_github_username or "Reviewer",
-                reviewer_email=reviewer_email,
                 story_title=task.title,
                 github_issue_url=task.github_issue_url,
-                change_summary=change_summary,
+                feedback_summary="\n".join(comment_texts[:3]),
                 cycle=cycle_num,
             )
 
