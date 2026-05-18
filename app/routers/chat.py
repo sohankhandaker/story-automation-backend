@@ -41,6 +41,10 @@ def send_chat(
     mention_match = MENTION_RE.search(body.message)
     if mention_match and task.status == "In Review":
         github_username = mention_match.group(1)
+        already_notified = (
+            task.reviewer_github_username
+            and task.reviewer_github_username.lower() == github_username.lower()
+        )
 
         # Find reviewer name + email from user's reviewer list
         reviewer_name = github_username
@@ -58,43 +62,46 @@ def send_chat(
 
         # Post GitHub comment @mentioning reviewer with clear instructions
         user_cfg = cfg_for_user(current_user)
-        agent_reply = f"Review requested. @{github_username} has been notified via GitHub."
-        if task.github_issue_number:
-            try:
-                gh.add_comment(
-                    task.github_issue_number,
-                    f"👋 @{github_username} — your review is requested for this user story.\n\n"
-                    f"**The full story is in the issue description above** (scroll to the top).\n\n"
-                    f"---\n\n"
-                    f"### How to respond\n\n"
-                    f"**To give feedback:**\n"
-                    f"Leave a comment below describing what should be changed. "
-                    f"The AI agent will update the story and notify you.\n\n"
-                    f"**To approve:**\n"
-                    f"Reply with a comment containing **`APPROVED`** (or `LGTM` / `Looks good`) "
-                    f"and the story will be marked as Done automatically.\n\n"
-                    f"---\n"
-                    f"*Requested by @{current_user.github_username or current_user.name}*",
-                    cfg=user_cfg,
-                )
-            except Exception as e:
-                agent_reply += f"\n\n(GitHub notification failed: {e})"
-
-        # ── Direct email notification to reviewer ────────────────────────────
-        if reviewer_email and task.github_issue_url:
-            sent = email_service.send_review_request(
-                reviewer_name=reviewer_name,
-                reviewer_email=reviewer_email,
-                requester_name=current_user.name,
-                story_title=task.title,
-                github_issue_url=task.github_issue_url,
-            )
-            if sent:
-                agent_reply += f"\n\nDirect email sent to **{reviewer_name}** ({reviewer_email})."
-            else:
-                agent_reply += "\n\n*(Email notification not configured — reviewer notified via GitHub only.)*"
+        if already_notified:
+            agent_reply = f"@{github_username} has already been notified. They will see any new comments you leave here."
         else:
-            agent_reply += "\n\n*(No email stored for this reviewer — notified via GitHub @mention only.)*"
+            agent_reply = f"Review requested. @{github_username} has been notified via GitHub."
+            if task.github_issue_number:
+                try:
+                    gh.add_comment(
+                        task.github_issue_number,
+                        f"👋 @{github_username} — your review is requested for this user story.\n\n"
+                        f"**The full story is in the issue description above** (scroll to the top).\n\n"
+                        f"---\n\n"
+                        f"### How to respond\n\n"
+                        f"**To give feedback:**\n"
+                        f"Leave a comment below describing what should be changed. "
+                        f"The AI agent will update the story and notify you.\n\n"
+                        f"**To approve:**\n"
+                        f"Reply with a comment containing **`APPROVED`** (or `LGTM` / `Looks good`) "
+                        f"and the story will be marked as Done automatically.\n\n"
+                        f"---\n"
+                        f"*Requested by @{current_user.github_username or current_user.name}*",
+                        cfg=user_cfg,
+                    )
+                except Exception as e:
+                    agent_reply += f"\n\n(GitHub notification failed: {e})"
+
+            # ── Direct email notification to reviewer ────────────────────────
+            if reviewer_email and task.github_issue_url:
+                sent = email_service.send_review_request(
+                    reviewer_name=reviewer_name,
+                    reviewer_email=reviewer_email,
+                    requester_name=current_user.name,
+                    story_title=task.title,
+                    github_issue_url=task.github_issue_url,
+                )
+                if sent:
+                    agent_reply += f"\n\nDirect email sent to **{reviewer_name}** ({reviewer_email})."
+                else:
+                    agent_reply += "\n\n*(Email notification not configured — reviewer notified via GitHub only.)*"
+            else:
+                agent_reply += "\n\n*(No email stored for this reviewer — notified via GitHub @mention only.)*"
 
         agent_msg = models.ChatMessage(
             task_id=task.id,
