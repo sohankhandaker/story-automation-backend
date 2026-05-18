@@ -5,6 +5,7 @@ from ..database import get_db
 from .. import models, schemas
 from ..deps import get_current_user
 from ..services import github as gh, agent, email_service
+from ..services.github import cfg_for_user
 
 router = APIRouter(prefix="/api/tasks", tags=["chat"])
 
@@ -56,6 +57,7 @@ def send_chat(
         db.commit()
 
         # Post GitHub comment @mentioning reviewer with clear instructions
+        user_cfg = cfg_for_user(current_user)
         agent_reply = f"Review requested. @{github_username} has been notified via GitHub."
         if task.github_issue_number:
             try:
@@ -73,6 +75,7 @@ def send_chat(
                     f"and the story will be marked as Done automatically.\n\n"
                     f"---\n"
                     f"*Requested by @{current_user.github_username or current_user.name}*",
+                    cfg=user_cfg,
                 )
             except Exception as e:
                 agent_reply += f"\n\n(GitHub notification failed: {e})"
@@ -115,6 +118,7 @@ def send_chat(
                     gh.update_issue_body(
                         task.github_issue_number,
                         f"**Requirement:**\n\n{updated_desc}\n\n*Updated via Story Automation App*",
+                        cfg=cfg_for_user(current_user),
                     )
                 except Exception:
                     pass

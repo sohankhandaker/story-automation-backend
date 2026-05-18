@@ -28,6 +28,10 @@ class UserResponse(BaseModel):
     email: str
     github_username: Optional[str]
     reviewer_list: List[ReviewerItem] = []
+    gh_owner: Optional[str] = None
+    gh_repo: Optional[str] = None
+    gh_project_number: Optional[int] = None
+    gh_token: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -42,6 +46,10 @@ class Token(BaseModel):
 class SettingsUpdate(BaseModel):
     github_username: Optional[str] = None
     reviewer_list: Optional[List[ReviewerItem]] = None
+    gh_owner: Optional[str] = None
+    gh_repo: Optional[str] = None
+    gh_project_number: Optional[int] = None
+    gh_token: Optional[str] = None
 
 
 # ── Task ──────────────────────────────────────────────────────────────────────

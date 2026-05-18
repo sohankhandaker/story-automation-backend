@@ -19,6 +19,11 @@ class User(Base):
     github_username = Column(String, nullable=True)
     device_tokens = Column(JSON, default=list)
     reviewer_list = Column(JSON, default=list)  # [{name, github_username}]
+    # Per-user GitHub project config (overrides env vars when set)
+    gh_token = Column(String, nullable=True)
+    gh_owner = Column(String, nullable=True)
+    gh_repo = Column(String, nullable=True)
+    gh_project_number = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

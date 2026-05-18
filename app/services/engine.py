@@ -15,6 +15,7 @@ from ..database import SessionLocal
 from ..config import settings
 from .. import models
 from . import github as gh
+from .github import cfg_for_user
 from . import agent, email_service
 
 log = logging.getLogger(__name__)
@@ -62,13 +63,13 @@ def _log_activity(db: Session, task: models.Task, action: str, trigger: str = No
     db.commit()
 
 
-def _update_task_status(db: Session, task: models.Task, status: str):
+def _update_task_status(db: Session, task: models.Task, status: str, cfg=None):
     task.status = status
     task.updated_at = datetime.utcnow()
     db.commit()
     if task.github_project_item_id:
         try:
-            gh.update_project_status(task.github_project_item_id, status)
+            gh.update_project_status(task.github_project_item_id, status, cfg=cfg)
         except Exception as e:
             log.error(f"GitHub status update failed for task {task.id}: {e}")
 
@@ -113,7 +114,10 @@ def run_ready_column(task_id: str):
         if not task or task.status not in ("Ready", "Backlog"):
             return
 
-        _update_task_status(db, task, "In Progress")
+        creator = _get_creator(db, task)
+        cfg = cfg_for_user(creator)
+
+        _update_task_status(db, task, "In Progress", cfg=cfg)
         _add_chat(db, task, "Agent", "Starting story generation. I'll work through 10 phases...")
         _log_activity(db, task, "WorkflowEngine started", "READY_COLUMN")
 
@@ -136,6 +140,7 @@ def run_ready_column(task_id: str):
                         gh.add_comment(
                             task.github_issue_number,
                             f"### Phase {phase_num}/10: {phase_name}\n\n{content}",
+                            cfg=cfg,
                         )
                     except Exception as e:
                         log.warning(f"GitHub comment failed for phase {phase_num}: {e}")
@@ -152,12 +157,12 @@ def run_ready_column(task_id: str):
         full_story = agent.build_full_story(phases)
         if task.github_issue_number and full_story:
             try:
-                gh.update_issue_body(task.github_issue_number, _build_issue_body(task, full_story))
+                gh.update_issue_body(task.github_issue_number, _build_issue_body(task, full_story), cfg=cfg)
                 log.info(f"Consolidated story published to issue #{task.github_issue_number}")
             except Exception as e:
                 log.warning(f"Failed to publish consolidated story: {e}")
 
-        _update_task_status(db, task, "In Review")
+        _update_task_status(db, task, "In Review", cfg=cfg)
         _add_chat(
             db, task, "Agent",
             "Story generation complete! All 10 phases are done ✅\n\n"
@@ -186,6 +191,9 @@ def run_review_comment(task_id: str, comment_texts: list[str], comment_ids: list
         if not task:
             return
 
+        creator = _get_creator(db, task)
+        cfg = cfg_for_user(creator)
+
         if task.current_review_cycle >= task.max_review_cycles:
             _add_chat(
                 db, task, "System",
@@ -197,6 +205,7 @@ def run_review_comment(task_id: str, comment_texts: list[str], comment_ids: list
                     task.github_issue_number,
                     f"⚠️ Maximum review cycles ({task.max_review_cycles}) reached. "
                     "Manual resolution required.",
+                    cfg=cfg,
                 )
             return
 
@@ -216,7 +225,7 @@ def run_review_comment(task_id: str, comment_texts: list[str], comment_ids: list
         )
         db.add(rc)
 
-        _update_task_status(db, task, "Changes Requested")
+        _update_task_status(db, task, "Changes Requested", cfg=cfg)
         _add_chat(
             db, task, "Agent",
             f"Reviewer feedback received (cycle {cycle_num}/{task.max_review_cycles}). "
@@ -226,6 +235,7 @@ def run_review_comment(task_id: str, comment_texts: list[str], comment_ids: list
             gh.add_comment(
                 task.github_issue_number,
                 "🔄 Changes noted. Updating the story based on reviewer feedback…",
+                cfg=cfg,
             )
 
         current_story = agent.build_full_story(task.story_phases or [])
@@ -247,6 +257,7 @@ def run_review_comment(task_id: str, comment_texts: list[str], comment_ids: list
                 gh.update_issue_body(
                     task.github_issue_number,
                     _build_issue_body(task, updated_story, cycle=cycle_num),
+                    cfg=cfg,
                 )
             except Exception as e:
                 log.warning(f"Failed to update issue body after review cycle: {e}")
@@ -259,9 +270,10 @@ def run_review_comment(task_id: str, comment_texts: list[str], comment_ids: list
                 f"The issue description above has been updated with the revised story.\n\n"
                 f"{mention} — please check the updated story in the issue description.\n\n"
                 f"> Reply **`APPROVED`** to approve, or leave further feedback below.",
+                cfg=cfg,
             )
 
-        _update_task_status(db, task, "In Review")
+        _update_task_status(db, task, "In Review", cfg=cfg)
 
         # ── Email re-notification to reviewer ────────────────────────────────
         reviewer_email = _get_reviewer_email(db, task)
@@ -302,11 +314,13 @@ def run_done_by_reviewer(task_id: str):
         if not task or task.status == "Done":
             return
 
-        _update_task_status(db, task, "Done")
+        creator = _get_creator(db, task)
+        cfg = cfg_for_user(creator)
+
+        _update_task_status(db, task, "Done", cfg=cfg)
         reviewer = task.reviewer_name or task.reviewer_github_username or "the reviewer"
 
         # ── Email creator that story was approved ─────────────────────────────
-        creator = _get_creator(db, task)
         if creator and task.github_issue_url:
             email_service.send_story_approved(
                 creator_name=creator.name,
@@ -327,6 +341,7 @@ def run_done_by_reviewer(task_id: str):
                 task.github_issue_number,
                 f"✅ Story approved and marked as **Done** by @{task.reviewer_github_username}.\n\n"
                 "Thank you for the review!",
+                cfg=cfg,
             )
         _log_activity(db, task, "Task approved and marked Done", "DONE_BY_REVIEWER")
 
@@ -371,8 +386,10 @@ def _poll_github():
 
 def _check_reviewer_comments(db: Session, task: models.Task):
     try:
+        creator = _get_creator(db, task)
+        cfg = cfg_for_user(creator)
         since = task.github_last_checked_at
-        comments = gh.get_comments_since(task.github_issue_number, since)
+        comments = gh.get_comments_since(task.github_issue_number, since, cfg=cfg)
         task.github_last_checked_at = datetime.utcnow()
         db.commit()
 
@@ -419,7 +436,9 @@ def _check_done_status(db: Session, task: models.Task):
     if not task.github_project_item_id:
         return
     try:
-        current_status = gh.get_project_item_status(task.github_project_item_id)
+        creator = _get_creator(db, task)
+        cfg = cfg_for_user(creator)
+        current_status = gh.get_project_item_status(task.github_project_item_id, cfg=cfg)
         if current_status and current_status.lower() == "done" and task.status != "Done":
             threading.Thread(
                 target=run_done_by_reviewer, args=(task.id,), daemon=True

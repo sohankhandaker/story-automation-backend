@@ -5,6 +5,7 @@ from ..database import get_db
 from .. import models, schemas
 from ..deps import get_current_user
 from ..services import github as gh, agent, engine
+from ..services.github import cfg_for_user
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 
@@ -59,18 +60,19 @@ def create_task(
     db.add(user_msg)
 
     # Create GitHub issue
+    user_cfg = cfg_for_user(current_user)
     issue_body = f"**Requirement:**\n\n{extracted['description']}\n\n*Created via Story Automation App*"
     try:
-        issue = gh.create_issue(extracted["title"], issue_body)
+        issue = gh.create_issue(extracted["title"], issue_body, cfg=user_cfg)
         task.github_issue_url = issue["url"]
         task.github_issue_number = issue["number"]
         task.github_issue_node_id = issue["node_id"]
 
         # Add to GitHub Projects v2
         try:
-            item_id = gh.add_to_project(issue["node_id"])
+            item_id = gh.add_to_project(issue["node_id"], cfg=user_cfg)
             task.github_project_item_id = item_id
-            gh.update_project_status(item_id, "Backlog")
+            gh.update_project_status(item_id, "Backlog", cfg=user_cfg)
         except Exception as e:
             pass  # Board add is best-effort; task still created
 
@@ -141,7 +143,10 @@ def update_status(
         # Update GitHub board
         if task.github_project_item_id:
             try:
-                gh.update_project_status(task.github_project_item_id, "Ready")
+                gh.update_project_status(
+                    task.github_project_item_id, "Ready",
+                    cfg=cfg_for_user(current_user),
+                )
             except Exception as e:
                 pass
 

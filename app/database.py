@@ -20,3 +20,27 @@ def get_db():
 def init_db():
     from . import models  # noqa: F401
     Base.metadata.create_all(bind=engine)
+    _migrate()
+
+
+def _migrate():
+    """Add new columns to existing tables without dropping data."""
+    new_cols = [
+        ("users", "gh_token", "VARCHAR"),
+        ("users", "gh_owner", "VARCHAR"),
+        ("users", "gh_repo", "VARCHAR"),
+        ("users", "gh_project_number", "INTEGER"),
+    ]
+    is_sqlite = settings.database_url.startswith("sqlite")
+    with engine.connect() as conn:
+        for table, col, col_type in new_cols:
+            try:
+                if is_sqlite:
+                    conn.execute(__import__("sqlalchemy").text(
+                        f"ALTER TABLE {table} ADD COLUMN {col} {col_type}"))
+                else:
+                    conn.execute(__import__("sqlalchemy").text(
+                        f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {col_type}"))
+                conn.commit()
+            except Exception:
+                conn.rollback()
