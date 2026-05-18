@@ -48,13 +48,14 @@ def update_settings(
         current_user.github_username = body.github_username
     if body.reviewer_list is not None:
         current_user.reviewer_list = [r.model_dump() for r in body.reviewer_list]
-    if body.gh_owner is not None:
+    fields = body.model_fields_set
+    if "gh_owner" in fields:
         current_user.gh_owner = body.gh_owner or None
-    if body.gh_repo is not None:
+    if "gh_repo" in fields:
         current_user.gh_repo = body.gh_repo or None
-    if body.gh_project_number is not None:
-        current_user.gh_project_number = body.gh_project_number
-    if body.gh_token is not None:
+    if "gh_project_number" in fields:
+        current_user.gh_project_number = body.gh_project_number or None
+    if "gh_token" in fields:
         current_user.gh_token = body.gh_token or None
     db.commit()
     db.refresh(current_user)
