@@ -539,6 +539,58 @@ def enhance_notes_to_brd(
     return {"title": title, "brd_markdown": brd}
 
 
+def update_brd_from_feedback(
+    current_brd: str,
+    reviewer_comments: list[str],
+) -> dict:
+    """Update BRD sections based on reviewer feedback.
+    Returns {updated_markdown, change_summary, changed_sections}."""
+    comments_text = "\n".join(f"- {c}" for c in reviewer_comments)
+    prompt = f"""You are a senior business analyst updating a Business Requirements Document (BRD) based on reviewer feedback.
+
+Reviewer Feedback:
+{comments_text}
+
+Current BRD:
+{current_brd[:12000]}
+
+Instructions:
+1. Update ONLY the sections that need to change based on the feedback.
+2. Keep all other sections word-for-word identical.
+3. List the exact section headings you changed (e.g. "6. Non-Functional Requirements").
+4. Write a 2-3 sentence summary of what changed and why.
+
+Respond EXACTLY in this format (no text before CHANGE_SUMMARY):
+CHANGE_SUMMARY: <2-3 sentence summary>
+CHANGED_SECTIONS: <comma-separated exact section headings that were changed>
+UPDATED_BRD:
+<full updated BRD in markdown>"""
+
+    text = _chat(prompt, max_tokens=7000)
+
+    change_summary = ""
+    changed_sections = []
+    updated_markdown = current_brd  # fallback if parse fails
+
+    if "UPDATED_BRD:" in text:
+        parts = text.split("UPDATED_BRD:", 1)
+        header = parts[0]
+        updated_markdown = parts[1].strip()
+        for line in header.splitlines():
+            s = line.strip()
+            if s.startswith("CHANGE_SUMMARY:"):
+                change_summary = s[15:].strip()
+            elif s.startswith("CHANGED_SECTIONS:"):
+                raw = s[17:].strip()
+                changed_sections = [x.strip() for x in raw.split(",") if x.strip()]
+
+    return {
+        "updated_markdown": updated_markdown,
+        "change_summary": change_summary,
+        "changed_sections": changed_sections,
+    }
+
+
 def build_full_story(phases: list[dict]) -> str:
     """Combine all completed phases into a single markdown document."""
     parts = []

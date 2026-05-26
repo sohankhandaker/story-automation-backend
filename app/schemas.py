@@ -134,6 +134,8 @@ class MeetingNoteResponse(BaseModel):
     wiki_url: Optional[str]
     brd_draft: Optional[str]
     brd_generation_phase: Optional[int] = None
+    status: str = "Draft"
+    current_version_number: int = 0
     created_at: datetime
     updated_at: datetime
 
@@ -143,6 +145,29 @@ class MeetingNoteResponse(BaseModel):
 
 class MeetingNotesListResponse(BaseModel):
     notes: List[MeetingNoteResponse]
+    total: int
+
+
+class BrdFeedbackRequest(BaseModel):
+    feedback: str
+
+
+class BrdVersionResponse(BaseModel):
+    id: str
+    note_id: str
+    version_number: int
+    brd_markdown: str
+    change_summary: Optional[str]
+    changed_sections: List[str] = []
+    reviewer_comment: Optional[str]
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class BrdVersionListResponse(BaseModel):
+    versions: List[BrdVersionResponse]
     total: int
 
 

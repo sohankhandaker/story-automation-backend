@@ -32,6 +32,8 @@ def _migrate():
         ("users", "gh_project_number", "INTEGER"),
         ("tasks", "reviewer_github_usernames", "JSON"),
         ("meeting_notes", "brd_generation_phase", "INTEGER"),
+        ("meeting_notes", "status", "VARCHAR"),
+        ("meeting_notes", "current_version_number", "INTEGER"),
     ]
     is_sqlite = settings.database_url.startswith("sqlite")
     with engine.connect() as conn:

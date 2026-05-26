@@ -105,10 +105,28 @@ class MeetingNote(Base):
     wiki_url = Column(String, nullable=True)
     brd_draft = Column(Text, nullable=True)
     brd_generation_phase = Column(Integer, nullable=True)
+    status = Column(String, default="Draft")           # Draft | In Review | Changes Requested | Approved
+    current_version_number = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     creator = relationship("User")
+    versions = relationship("BrdVersion", back_populates="note", order_by="BrdVersion.version_number")
+
+
+class BrdVersion(Base):
+    __tablename__ = "brd_versions"
+
+    id = Column(String, primary_key=True, default=gen_id)
+    note_id = Column(String, ForeignKey("meeting_notes.id"))
+    version_number = Column(Integer, nullable=False)
+    brd_markdown = Column(Text, nullable=False)
+    change_summary = Column(String, nullable=True)
+    changed_sections = Column(JSON, default=list)
+    reviewer_comment = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    note = relationship("MeetingNote", back_populates="versions")
 
 
 class ActivityLog(Base):
