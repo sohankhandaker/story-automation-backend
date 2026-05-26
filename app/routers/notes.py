@@ -436,7 +436,7 @@ def assign_reviewer(
     ).first()
     if not note:
         raise HTTPException(status_code=404, detail="Note not found")
-    if note.status != "Pending Review":
+    if note.status not in ("Pending Review", "In Review", "Changes Requested"):
         raise HTTPException(status_code=400, detail="BRD is not ready for reviewer assignment")
 
     cfg = cfg_for_user(current_user)
