@@ -120,6 +120,31 @@ class ChatResponse(BaseModel):
     messages: List[ChatMessageResponse]
 
 
+# ── Meeting Notes ─────────────────────────────────────────────────────────────
+
+class NotesEnhanceRequest(BaseModel):
+    raw_notes: str
+    wiki_url: Optional[str] = None
+
+
+class MeetingNoteResponse(BaseModel):
+    id: str
+    title: Optional[str]
+    raw_notes: str
+    wiki_url: Optional[str]
+    brd_draft: Optional[str]
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class MeetingNotesListResponse(BaseModel):
+    notes: List[MeetingNoteResponse]
+    total: int
+
+
 # ── Device token ──────────────────────────────────────────────────────────────
 
 class DeviceTokenCreate(BaseModel):

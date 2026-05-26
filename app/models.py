@@ -95,6 +95,21 @@ class ReviewCycle(Base):
     task = relationship("Task", back_populates="review_cycles")
 
 
+class MeetingNote(Base):
+    __tablename__ = "meeting_notes"
+
+    id = Column(String, primary_key=True, default=gen_id)
+    creator_id = Column(String, ForeignKey("users.id"))
+    title = Column(String, nullable=True)
+    raw_notes = Column(Text, nullable=False)
+    wiki_url = Column(String, nullable=True)
+    brd_draft = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    creator = relationship("User")
+
+
 class ActivityLog(Base):
     __tablename__ = "activity_logs"
 

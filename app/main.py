@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .database import init_db
 from .services import github as gh
 from .services import engine
-from .routers import auth, tasks, chat, webhooks
+from .routers import auth, tasks, chat, webhooks, notes
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s — %(message)s")
 log = logging.getLogger(__name__)
@@ -41,6 +41,7 @@ app.include_router(auth.router)
 app.include_router(tasks.router)
 app.include_router(chat.router)
 app.include_router(webhooks.router)
+app.include_router(notes.router)
 
 
 @app.get("/health")

@@ -148,6 +148,70 @@ UPDATED_STORY:
     return {"updated_story": updated_story, "change_summary": change_summary}
 
 
+def enhance_notes_to_brd(raw_notes: str, wiki_content: str = "") -> dict:
+    """
+    Take raw meeting notes (+ optional wiki context) and produce a full BRD.
+    Returns {title, brd_markdown}.
+    """
+    context_block = ""
+    if wiki_content:
+        context_block = f"""
+Additional context from provided wiki/documentation:
+---
+{wiki_content[:4000]}
+---
+"""
+
+    prompt = f"""You are a senior business analyst. You have received raw meeting notes and must produce a complete, professional Business Requirements Document (BRD).
+
+Raw Meeting Notes:
+---
+{raw_notes}
+---
+{context_block}
+Produce a full BRD in markdown with exactly these sections:
+
+# [Extract a concise BRD title from the notes]
+
+## Executive Summary
+2–3 sentences summarising the project goal and business need.
+
+## Business Objectives
+Bulleted list of measurable business goals.
+
+## Stakeholders & Personas
+Table: | Role | Name / Team | Interest |
+
+## Functional Requirements
+Table with columns: | ID | Requirement | Priority (Must/Should/Could) | Notes |
+Minimum 5 requirements extracted from the notes.
+
+## Non-Functional Requirements
+Table: | Category | Requirement | Metric |
+Cover: Performance, Security, Availability, Scalability, Usability.
+
+## Constraints & Assumptions
+Two subsections listing constraints and assumptions as bullets.
+
+## Out of Scope
+Bullet list of explicitly excluded items.
+
+## Success Metrics
+Bullet list of measurable KPIs to determine project success.
+
+## Open Questions
+Numbered list of unresolved questions that need stakeholder input.
+
+Return ONLY the BRD markdown — no preamble, no commentary."""
+
+    brd = _chat(prompt, max_tokens=3000)
+
+    title_line = next((l for l in brd.splitlines() if l.startswith("# ")), "")
+    title = title_line.lstrip("# ").strip() or "Meeting BRD"
+
+    return {"title": title, "brd_markdown": brd}
+
+
 def build_full_story(phases: list[dict]) -> str:
     """Combine all completed phases into a single markdown document."""
     parts = []
