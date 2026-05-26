@@ -136,6 +136,10 @@ class MeetingNoteResponse(BaseModel):
     brd_generation_phase: Optional[int] = None
     status: str = "Draft"
     current_version_number: int = 0
+    github_issue_url: Optional[str] = None
+    github_issue_number: Optional[int] = None
+    reviewer_github_username: Optional[str] = None
+    reviewer_name: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
@@ -150,6 +154,34 @@ class MeetingNotesListResponse(BaseModel):
 
 class BrdFeedbackRequest(BaseModel):
     feedback: str
+
+
+class NoteEntryCreate(BaseModel):
+    content: str
+
+
+class NoteEntryResponse(BaseModel):
+    id: str
+    note_id: str
+    content: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class NoteEntriesListResponse(BaseModel):
+    entries: List[NoteEntryResponse]
+    total: int
+
+
+class MarkReadyRequest(BaseModel):
+    pass
+
+
+class AssignReviewerRequest(BaseModel):
+    reviewer_github_username: str
+    reviewer_name: Optional[str] = None
 
 
 class BrdVersionResponse(BaseModel):

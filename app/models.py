@@ -107,11 +107,32 @@ class MeetingNote(Base):
     brd_generation_phase = Column(Integer, nullable=True)
     status = Column(String, default="Draft")           # Draft | In Review | Changes Requested | Approved
     current_version_number = Column(Integer, default=0)
+    # GitHub integration
+    github_issue_url = Column(String, nullable=True)
+    github_issue_number = Column(Integer, nullable=True)
+    github_issue_node_id = Column(String, nullable=True)
+    github_project_item_id = Column(String, nullable=True)
+    reviewer_github_username = Column(String, nullable=True)
+    reviewer_name = Column(String, nullable=True)
+    github_last_checked_at = Column(DateTime, nullable=True)
+    processed_comment_ids = Column(JSON, default=list)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     creator = relationship("User")
     versions = relationship("BrdVersion", back_populates="note", order_by="BrdVersion.version_number")
+    entries = relationship("NoteEntry", back_populates="note", order_by="NoteEntry.created_at")
+
+
+class NoteEntry(Base):
+    __tablename__ = "note_entries"
+
+    id = Column(String, primary_key=True, default=gen_id)
+    note_id = Column(String, ForeignKey("meeting_notes.id"))
+    content = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    note = relationship("MeetingNote", back_populates="entries")
 
 
 class BrdVersion(Base):

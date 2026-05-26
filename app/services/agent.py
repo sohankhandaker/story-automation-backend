@@ -165,7 +165,11 @@ Return ONLY the markdown — no preamble, no "Here is..." commentary."""
 
 
 def _brd_phase_prompt(phase_num: int, phase_name: str, raw_notes: str,
-                      wiki_content: str, prior_brd: str) -> str:
+                      wiki_content: str, prior_brd: str, analysis: str = "") -> str:
+    analysis_block = (
+        f"\n**Notes Analysis (primary context — use this as your main input):**\n---\n{analysis[:3000]}\n---\n"
+        if analysis else ""
+    )
     wiki_block = (
         f"\n**Context from wiki/documentation:**\n---\n{wiki_content[:2000]}\n---\n"
         if wiki_content else ""
@@ -490,15 +494,63 @@ Goal and possible additions.
 ---
 {raw_notes[:4000]}
 ---
-{wiki_block}{prior_block}
+{analysis_block}{wiki_block}{prior_block}
 **Phase {phase_num}/7 — {phase_name}**
 
 {instructions[phase_num]}"""
 
 
+def analyze_notes_to_draft(combined_notes: str, crawled_content: str = "") -> str:
+    """Analyze meeting notes and produce a structured context document for BRD generation."""
+    context_block = (
+        f"\n\n**Additional context from linked resources:**\n---\n{crawled_content[:4000]}\n---"
+        if crawled_content else ""
+    )
+    prompt = f"""You are a senior business analyst. Analyze these meeting notes and produce a comprehensive structured analysis document that will serve as the primary input for generating a full Business Requirements Document (BRD).
+
+**Meeting Notes:**
+---
+{combined_notes[:6000]}
+---
+{context_block}
+
+Produce a structured analysis with these sections:
+
+# [Extract the project/product title from the notes]
+
+## 1. Problem Statement
+What problem is being solved? Why does this project exist?
+
+## 2. Key Requirements
+Numbered list of ALL requirements identified (explicit and implied).
+
+## 3. Stakeholders
+Who is mentioned or implied as a stakeholder, user, or decision-maker?
+
+## 4. Key Decisions & Constraints
+Decisions already made, constraints, compliance requirements.
+
+## 5. Technical & Integration Context
+Tech stack, platforms, integrations, data sources mentioned.
+
+## 6. Business Goals & Success Metrics
+What does success look like? KPIs or goals mentioned.
+
+## 7. Open Questions & Gaps
+Things not yet decided, missing information, areas needing clarification.
+
+## 8. Context Summary
+A comprehensive 3-4 paragraph synthesis of all the above for use in BRD generation.
+
+Be thorough. Extract every requirement and constraint. Infer reasonable values for things implied but not stated. Use proper markdown formatting."""
+
+    return _chat(prompt, max_tokens=3000)
+
+
 def enhance_notes_to_brd(
     raw_notes: str,
     wiki_content: str = "",
+    analysis: str = "",
     phase_callback=None,
 ) -> dict:
     """
@@ -513,7 +565,7 @@ def enhance_notes_to_brd(
     for phase_num, phase_name in BRD_PHASES:
         log.info(f"BRD phase {phase_num}/{total}: {phase_name}")
         try:
-            prompt = _brd_phase_prompt(phase_num, phase_name, raw_notes, wiki_content, accumulated)
+            prompt = _brd_phase_prompt(phase_num, phase_name, raw_notes, wiki_content, accumulated, analysis)
             content = _chat(prompt, max_tokens=3500)
             sections.append(content)
             accumulated += "\n\n" + content

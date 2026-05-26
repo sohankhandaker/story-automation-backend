@@ -393,8 +393,8 @@ def trigger_ready_column(task_id: str):
 def _poll_github():
     """
     Runs every POLL_INTERVAL_SECONDS.
-    1. Checks for new reviewer comments — approval keywords → Done, otherwise → review cycle.
-    2. Checks if reviewer moved the project board item to Done.
+    1. Checks tasks for new reviewer comments / board moves.
+    2. Checks BRD notes for new reviewer comments / approval.
     """
     db = SessionLocal()
     try:
@@ -411,6 +411,17 @@ def _poll_github():
         for task in tasks:
             _check_reviewer_comments(db, task)
             _check_done_status(db, task)
+
+        # BRD notes in review
+        brd_notes = db.query(models.MeetingNote).filter(
+            models.MeetingNote.status.in_(["In Review", "Changes Requested"]),
+            models.MeetingNote.github_issue_number.isnot(None),
+            models.MeetingNote.reviewer_github_username.isnot(None),
+        ).all()
+
+        for note in brd_notes:
+            _check_brd_reviewer_comments(db, note)
+            _check_brd_done_status(db, note)
 
     except Exception as e:
         log.error(f"Polling job error: {e}")
@@ -482,6 +493,248 @@ def _check_done_status(db: Session, task: models.Task):
             ).start()
     except Exception as e:
         log.error(f"Done check failed for task {task.id}: {e}")
+
+
+# ── BRD helpers ──────────────────────────────────────────────────────────────
+
+def _extract_changed_section_content(brd_markdown: str, changed_sections: list[str]) -> str:
+    """Build a GitHub comment block showing only the changed section content."""
+    if not changed_sections:
+        return ""
+
+    lines = brd_markdown.splitlines()
+    sections: dict[str, list[str]] = {}
+    current_header = None
+    current_lines: list[str] = []
+
+    for line in lines:
+        if line.startswith("#"):
+            if current_header is not None:
+                sections[current_header] = current_lines
+            current_header = line.lstrip("#").strip()
+            current_lines = []
+        else:
+            current_lines.append(line)
+    if current_header:
+        sections[current_header] = current_lines
+
+    blocks = []
+    for section_name in changed_sections:
+        # fuzzy match: check if any stored header contains the changed section name
+        content = None
+        for header, body in sections.items():
+            if section_name.lower() in header.lower() or header.lower() in section_name.lower():
+                content = "\n".join(body).strip()
+                break
+        if content:
+            preview = content[:1200] + ("…" if len(content) > 1200 else "")
+            blocks.append(
+                f"<details>\n<summary>📝 {section_name}</summary>\n\n{preview}\n\n</details>"
+            )
+
+    return "\n\n".join(blocks)
+
+
+def _build_brd_update_comment(
+    version: int,
+    change_summary: str,
+    changed_sections: list[str],
+    updated_markdown: str,
+    reviewer_mention: str,
+) -> str:
+    sections_line = ", ".join(changed_sections) if changed_sections else "General updates"
+    diff_blocks = _extract_changed_section_content(updated_markdown, changed_sections)
+
+    body = (
+        f"## ✏️ BRD Updated (v{version})\n\n"
+        f"**Changes:** {change_summary}\n\n"
+        f"**Sections updated:** {sections_line}\n\n"
+    )
+    if diff_blocks:
+        body += f"### Changed sections\n\n{diff_blocks}\n\n"
+    body += (
+        f"---\n\n"
+        f"The full updated BRD is in the issue description above.\n\n"
+        f"{reviewer_mention} — please review. "
+        f"Reply **`APPROVED`** to approve, or leave further feedback."
+    )
+    return body
+
+
+# ── BRD review polling ────────────────────────────────────────────────────────
+
+def _check_brd_reviewer_comments(db: Session, note: models.MeetingNote):
+    try:
+        creator = db.query(models.User).filter(models.User.id == note.creator_id).first()
+        cfg = cfg_for_user(creator)
+        since = note.github_last_checked_at
+        comments = gh.get_comments_since(note.github_issue_number, since, cfg=cfg)
+        note.github_last_checked_at = datetime.utcnow()
+        db.commit()
+
+        processed = set(str(c) for c in (note.processed_comment_ids or []))
+        reviewer = note.reviewer_github_username.lower() if note.reviewer_github_username else ""
+        new_comments = [
+            c for c in comments
+            if c["user"]["login"].lower() == reviewer
+            and str(c["id"]) not in processed
+        ]
+        if not new_comments:
+            return
+
+        approval = [c for c in new_comments if _is_approval(c["body"])]
+        feedback = [c for c in new_comments if not _is_approval(c["body"])]
+
+        processed_list = list(note.processed_comment_ids or [])
+        processed_list.extend(str(c["id"]) for c in new_comments)
+        note.processed_comment_ids = processed_list
+        db.commit()
+
+        if approval:
+            threading.Thread(target=run_brd_approved, args=(note.id,), daemon=True).start()
+        elif feedback:
+            comment_texts = [c["body"] for c in feedback]
+            comment_ids = [c["id"] for c in feedback]
+            threading.Thread(
+                target=run_brd_review_comment,
+                args=(note.id, comment_texts, comment_ids),
+                daemon=True,
+            ).start()
+
+    except Exception as e:
+        log.error(f"BRD comment check failed for note {note.id}: {e}")
+
+
+def _check_brd_done_status(db: Session, note: models.MeetingNote):
+    if not note.github_project_item_id:
+        return
+    try:
+        creator = db.query(models.User).filter(models.User.id == note.creator_id).first()
+        cfg = cfg_for_user(creator)
+        current_status = gh.get_project_item_status(note.github_project_item_id, cfg=cfg)
+        if current_status and current_status.lower() == "done" and note.status != "Approved":
+            threading.Thread(target=run_brd_approved, args=(note.id,), daemon=True).start()
+    except Exception as e:
+        log.error(f"BRD done check failed for note {note.id}: {e}")
+
+
+def run_brd_review_comment(note_id: str, comment_texts: list[str], comment_ids: list[int]):
+    """Called when reviewer leaves feedback on a BRD GitHub issue."""
+    db = SessionLocal()
+    try:
+        note = db.query(models.MeetingNote).filter(models.MeetingNote.id == note_id).first()
+        if not note:
+            return
+
+        creator = db.query(models.User).filter(models.User.id == note.creator_id).first()
+        cfg = cfg_for_user(creator)
+
+        processed = list(note.processed_comment_ids or [])
+        processed.extend(str(c) for c in comment_ids)
+        note.processed_comment_ids = processed
+        note.status = "Changes Requested"
+        note.brd_generation_phase = 0  # update in progress
+        db.commit()
+
+        if note.github_issue_number:
+            gh.add_comment(
+                note.github_issue_number,
+                "🔄 Feedback received. Updating the BRD based on reviewer comments…",
+                cfg=cfg,
+            )
+
+        result = agent.update_brd_from_feedback(
+            current_brd=note.brd_draft or "",
+            reviewer_comments=comment_texts,
+        )
+
+        next_ver = (note.current_version_number or 1) + 1
+        version = models.BrdVersion(
+            note_id=note.id,
+            version_number=next_ver,
+            brd_markdown=result["updated_markdown"],
+            change_summary=result["change_summary"],
+            changed_sections=result["changed_sections"],
+            reviewer_comment="\n".join(comment_texts[:3]),
+        )
+        db.add(version)
+
+        note.brd_draft = result["updated_markdown"]
+        note.current_version_number = next_ver
+        note.brd_generation_phase = None
+        note.status = "In Review"
+
+        if note.github_issue_number:
+            try:
+                from ..routers.notes import _build_brd_issue_body
+                gh.update_issue_body(
+                    note.github_issue_number,
+                    _build_brd_issue_body(note, result["updated_markdown"]),
+                    cfg=cfg,
+                )
+                reviewer = f"@{note.reviewer_github_username}" if note.reviewer_github_username else "Reviewer"
+                gh.add_comment(
+                    note.github_issue_number,
+                    _build_brd_update_comment(
+                        version=next_ver,
+                        change_summary=result["change_summary"],
+                        changed_sections=result["changed_sections"],
+                        updated_markdown=result["updated_markdown"],
+                        reviewer_mention=reviewer,
+                    ),
+                    cfg=cfg,
+                )
+            except Exception as e:
+                log.warning(f"GitHub update failed after BRD review comment: {e}")
+
+        db.commit()
+        log.info(f"BRD note {note_id} updated to v{next_ver} from reviewer feedback")
+
+    except Exception as e:
+        log.error(f"run_brd_review_comment failed for note {note_id}: {e}")
+        try:
+            note.brd_generation_phase = None
+            db.commit()
+        except Exception:
+            pass
+    finally:
+        db.close()
+
+
+def run_brd_approved(note_id: str):
+    """Called when reviewer approves the BRD."""
+    db = SessionLocal()
+    try:
+        note = db.query(models.MeetingNote).filter(models.MeetingNote.id == note_id).first()
+        if not note or note.status == "Approved":
+            return
+
+        creator = db.query(models.User).filter(models.User.id == note.creator_id).first()
+        cfg = cfg_for_user(creator)
+
+        note.status = "Approved"
+        db.commit()
+
+        if note.github_project_item_id:
+            try:
+                gh.update_project_status(note.github_project_item_id, "Done", cfg=cfg)
+            except Exception as e:
+                log.warning(f"GitHub board status update failed: {e}")
+
+        reviewer = note.reviewer_name or note.reviewer_github_username or "the reviewer"
+        if note.github_issue_number:
+            gh.add_comment(
+                note.github_issue_number,
+                f"✅ BRD approved by {reviewer} and marked as **Done**.\n\nThank you for the review!",
+                cfg=cfg,
+            )
+
+        log.info(f"BRD note {note_id} approved by {reviewer}")
+
+    except Exception as e:
+        log.error(f"run_brd_approved failed for note {note_id}: {e}")
+    finally:
+        db.close()
 
 
 def start_scheduler():

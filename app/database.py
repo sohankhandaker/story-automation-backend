@@ -34,6 +34,14 @@ def _migrate():
         ("meeting_notes", "brd_generation_phase", "INTEGER"),
         ("meeting_notes", "status", "VARCHAR"),
         ("meeting_notes", "current_version_number", "INTEGER"),
+        ("meeting_notes", "github_issue_url", "VARCHAR"),
+        ("meeting_notes", "github_issue_number", "INTEGER"),
+        ("meeting_notes", "github_issue_node_id", "VARCHAR"),
+        ("meeting_notes", "github_project_item_id", "VARCHAR"),
+        ("meeting_notes", "reviewer_github_username", "VARCHAR"),
+        ("meeting_notes", "reviewer_name", "VARCHAR"),
+        ("meeting_notes", "github_last_checked_at", "TIMESTAMP"),
+        ("meeting_notes", "processed_comment_ids", "JSON"),
     ]
     is_sqlite = settings.database_url.startswith("sqlite")
     with engine.connect() as conn:
