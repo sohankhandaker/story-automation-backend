@@ -104,6 +104,7 @@ class MeetingNote(Base):
     raw_notes = Column(Text, nullable=False)
     wiki_url = Column(String, nullable=True)
     brd_draft = Column(Text, nullable=True)
+    brd_generation_phase = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

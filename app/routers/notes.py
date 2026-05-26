@@ -11,20 +11,30 @@ router = APIRouter(prefix="/api/notes", tags=["notes"])
 
 def _generate_brd(note_id: str):
     """Background task: crawl wiki + call AI, then update the note."""
+    import logging
     from ..database import SessionLocal
+    log = logging.getLogger(__name__)
     db = SessionLocal()
     try:
         note = db.query(models.MeetingNote).filter(models.MeetingNote.id == note_id).first()
         if not note:
             return
         wiki_content = fetch_page_text(note.wiki_url) if note.wiki_url else ""
-        result = agent.enhance_notes_to_brd(note.raw_notes, wiki_content)
+
+        def _phase_cb(phase_num: int, total: int):
+            try:
+                note.brd_generation_phase = phase_num
+                db.commit()
+            except Exception as cb_err:
+                log.warning(f"Phase callback commit failed: {cb_err}")
+
+        result = agent.enhance_notes_to_brd(note.raw_notes, wiki_content, phase_callback=_phase_cb)
         note.title = result["title"]
         note.brd_draft = result["brd_markdown"]
+        note.brd_generation_phase = None
         db.commit()
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).error(f"BRD generation failed for note {note_id}: {e}")
+        log.error(f"BRD generation failed for note {note_id}: {e}")
     finally:
         db.close()
 

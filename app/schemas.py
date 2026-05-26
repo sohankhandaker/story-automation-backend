@@ -133,6 +133,7 @@ class MeetingNoteResponse(BaseModel):
     raw_notes: str
     wiki_url: Optional[str]
     brd_draft: Optional[str]
+    brd_generation_phase: Optional[int] = None
     created_at: datetime
     updated_at: datetime
 
