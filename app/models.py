@@ -123,6 +123,7 @@ class MeetingNote(Base):
     versions = relationship("BrdVersion", back_populates="note", order_by="BrdVersion.version_number")
     entries = relationship("NoteEntry", back_populates="note", order_by="NoteEntry.created_at")
     attachments = relationship("NoteAttachment", back_populates="note", order_by="NoteAttachment.created_at")
+    prd = relationship("PrdDocument", back_populates="note", uselist=False)
 
 
 class NoteEntry(Base):
@@ -163,6 +164,45 @@ class BrdVersion(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     note = relationship("MeetingNote", back_populates="versions")
+
+
+class PrdDocument(Base):
+    __tablename__ = "prd_documents"
+
+    id = Column(String, primary_key=True, default=gen_id)
+    note_id = Column(String, ForeignKey("meeting_notes.id"), unique=True)
+    prd_draft = Column(Text, nullable=True)
+    prd_generation_phase = Column(Integer, nullable=True)
+    status = Column(String, default="Draft")
+    current_version_number = Column(Integer, default=0)
+    github_issue_url = Column(String, nullable=True)
+    github_issue_number = Column(Integer, nullable=True)
+    github_issue_node_id = Column(String, nullable=True)
+    github_project_item_id = Column(String, nullable=True)
+    reviewer_github_username = Column(String, nullable=True)
+    reviewer_name = Column(String, nullable=True)
+    github_last_checked_at = Column(DateTime, nullable=True)
+    processed_comment_ids = Column(JSON, default=list)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    note = relationship("MeetingNote", back_populates="prd")
+    versions = relationship("PrdVersion", back_populates="prd", order_by="PrdVersion.version_number")
+
+
+class PrdVersion(Base):
+    __tablename__ = "prd_versions"
+
+    id = Column(String, primary_key=True, default=gen_id)
+    prd_id = Column(String, ForeignKey("prd_documents.id"))
+    version_number = Column(Integer, nullable=False)
+    prd_markdown = Column(Text, nullable=False)
+    change_summary = Column(String, nullable=True)
+    changed_sections = Column(JSON, default=list)
+    reviewer_comment = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    prd = relationship("PrdDocument", back_populates="versions")
 
 
 class ActivityLog(Base):

@@ -218,6 +218,49 @@ class NoteAttachmentResponse(BaseModel):
         from_attributes = True
 
 
+# ── PRD ───────────────────────────────────────────────────────────────────────
+
+class PrdResponse(BaseModel):
+    id: str
+    note_id: str
+    prd_draft: Optional[str]
+    prd_generation_phase: Optional[int] = None
+    status: str = "Draft"
+    current_version_number: int = 0
+    github_issue_url: Optional[str] = None
+    github_issue_number: Optional[int] = None
+    reviewer_github_username: Optional[str] = None
+    reviewer_name: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class PrdVersionResponse(BaseModel):
+    id: str
+    prd_id: str
+    version_number: int
+    prd_markdown: str
+    change_summary: Optional[str]
+    changed_sections: List[str] = []
+    reviewer_comment: Optional[str]
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class PrdVersionListResponse(BaseModel):
+    versions: List[PrdVersionResponse]
+    total: int
+
+
+class PrdFeedbackRequest(BaseModel):
+    feedback: str
+
+
 # ── Device token ──────────────────────────────────────────────────────────────
 
 class DeviceTokenCreate(BaseModel):

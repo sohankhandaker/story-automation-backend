@@ -643,6 +643,478 @@ UPDATED_BRD:
     }
 
 
+PRD_PHASES = [
+    (1,  "Document Header, Purpose & Product Summary"),
+    (2,  "Product Goals, Non-Goals, Target Users & Platforms"),
+    (3,  "MVP Scope & Core Concepts"),
+    (4,  "Architecture & User Flows"),
+    (5,  "State Machines & Functional Requirements"),
+    (6,  "Screen Requirements & Data Model"),
+    (7,  "API Contract & Permissions Matrix"),
+    (8,  "Validation Rules, Notifications & Reporting"),
+    (9,  "NFRs, Error Handling & Edge Cases"),
+    (10, "AI Coding Guidance & User Stories"),
+]
+
+_PRD_SYSTEM = """You are a senior product manager producing a professional, engineering-ready Product Requirements Document (PRD).
+Extract real details from the BRD; infer reasonable values for gaps; keep all requirements specific and testable.
+Return ONLY the markdown section content — no preamble, no "Here is..." commentary."""
+
+
+def _prd_phase_prompt(phase_num: int, phase_name: str, brd_content: str, prior_prd: str) -> str:
+    prior_block = (
+        f"\n**Previously generated PRD content (for consistency):**\n---\n{prior_prd[-3000:]}\n---\n"
+        if prior_prd else ""
+    )
+
+    from datetime import date
+    today = date.today().isoformat()
+
+    instructions = {
+        1: f"""Generate the PRD document header and opening sections.
+
+Start with EXACTLY this header block (fill in values from BRD):
+# Product Requirements Document (PRD)
+**Product:** [Extract product name from BRD]
+**Version:** 1.0 — Draft
+**Generated from BRD:** [Extract BRD title]
+**Date:** {today}
+**Prepared By:** Product Team
+**Status:** Draft — awaiting engineering & design review
+
+---
+
+## 1. Purpose
+
+Write 2–3 paragraphs explaining:
+- Why this PRD exists and what decisions it enables
+- What problem the product solves and for whom
+- How this document should be used by engineers, designers, and QA
+
+---
+
+## 2. Product Summary
+
+Write a concise product summary (3–5 sentences) covering:
+- What the product is
+- The core value proposition
+- The primary users and key workflows
+- The target platform(s)
+- The go-live goal""",
+
+        2: """## 3. Product Goals
+
+| Goal ID | Goal | Description | Priority |
+|---|---|---|---|
+(List 6–9 goals: PG-01 to PG-09. Cover adoption, engagement, operational efficiency, compliance, and business outcomes. Priority: Must Have / Should Have / Could Have)
+
+---
+
+## 4. Non-Goals
+
+Explicit list of what this product will NOT do in the current scope (8–12 items). Be precise — state exactly what is excluded and why (e.g. "No native desktop app — web and mobile only for MVP").
+
+---
+
+## 5. Target Users
+
+For each of 4–6 user types, write a persona block:
+
+### [Role Name] (e.g. Volunteer, Admin, Organizer)
+- **Description:** 1–2 sentences on who this user is
+- **Goals:** 3–4 bullet points of what they want to achieve on the platform
+- **Pain Points:** 2–3 current frustrations the product resolves
+- **Tech Comfort:** Low / Medium / High
+- **Key Scenarios:** 2–3 common scenarios they experience
+
+---
+
+## 6. Platforms
+
+| Platform | Supported | Notes |
+|---|---|---|
+(List all platforms: iOS App, Android App, Web App (responsive), Admin Web Portal, etc. Mark MVP support clearly)""",
+
+        3: """## 7. MVP Scope
+
+| Module | Feature | Priority | Included in MVP |
+|---|---|---|---|
+(List 20–30 features across all modules. Priority: Must Have / Should Have / Could Have. MVP: Yes / No / Deferred)
+
+---
+
+## 8. Core Concepts
+
+Define 8–14 domain-specific terms and concepts that engineers and designers MUST understand before working on this product. For each:
+
+### [Concept Name]
+1–3 sentence definition. Include any business rules directly tied to the concept.
+
+Example:
+### Opportunity
+A structured volunteer engagement listing created by an Organizer. An Opportunity has a defined capacity, schedule, skills required, and lifecycle from Draft → Published → Active → Closed.""",
+
+        4: f"""## 9. Architecture Overview
+
+Write a high-level architecture overview (3–4 paragraphs) covering:
+- Frontend layers (mobile app, web portal, admin dashboard)
+- Backend layers (API server, background jobs, external integrations)
+- Data layer (primary database, file storage, cache)
+- Key external service dependencies
+
+Then provide a text-based architecture diagram:
+```
+┌─────────────────────────────────────────────┐
+│              Client Layer                    │
+│  [Mobile App (iOS/Android)]  [Web Portal]   │
+└───────────────────┬─────────────────────────┘
+                    │ HTTPS / REST
+┌───────────────────▼─────────────────────────┐
+│               API Gateway / Backend         │
+│  [Auth Service]  [Core API]  [Jobs Worker]  │
+└───────────────────┬─────────────────────────┘
+                    │
+┌───────────────────▼─────────────────────────┐
+│               Data Layer                    │
+│  [PostgreSQL]  [File Storage]  [Cache]      │
+└─────────────────────────────────────────────┘
+```
+(Adapt the diagram to match the actual product architecture from the BRD)
+
+---
+
+## 10. User Flows
+
+For each of 6–10 critical user flows, write a detailed flow:
+
+### Flow [N]: [Flow Name]
+- **Actor:** [who performs this flow]
+- **Precondition:** [what must be true before the flow starts]
+- **Steps:**
+  1. Step one (include UI action + system response)
+  2. Step two
+  3. …continue to completion
+- **Postcondition:** [what is true after success]
+- **Failure Cases:**
+  - [Failure scenario 1] → [system response / recovery]
+  - [Failure scenario 2] → [system response / recovery]""",
+
+        5: """## 11. State Machines
+
+For each of 4–7 entities that have meaningful lifecycle states, write a state machine:
+
+### [Entity] State Machine
+**States:** List all valid states
+
+**Transitions:**
+| From State | Event / Trigger | To State | Guard Condition | Side Effects |
+|---|---|---|---|---|
+(All valid transitions with trigger event, guard condition, and side effects like notifications or data changes)
+
+**State Diagram (text):**
+```
+[Draft] ──(publish)──▶ [Published] ──(fill)──▶ [Active] ──(complete)──▶ [Closed]
+                              │                                              │
+                          (archive)                                    (archive)
+                              ▼                                              ▼
+                         [Archived]                                   [Archived]
+```
+(Adapt to actual entity lifecycle from the BRD)
+
+---
+
+## 12. Functional Requirements
+
+For each of 8–12 functional modules, write a requirements table:
+
+### 12.X [Module Name]
+
+| ID | Requirement | Priority | Acceptance Criteria |
+|---|---|---|---|
+(FR-[MODULE]-001 onwards. Priority: Must Have / Should Have / Could Have. AC should be testable — "Given X, when Y, then Z" format. 4–8 requirements per module.)""",
+
+        6: """## 13. Screen Requirements
+
+List all screens/views by actor group. For each screen:
+
+| ID | Screen Name | Actor | Description | Key Elements | Entry Points |
+|---|---|---|---|---|---|
+
+Use these ID prefixes:
+- VS-xxx — Volunteer-facing screens
+- AS-xxx — Admin-facing screens
+- OS-xxx — Organizer-facing screens
+- SS-xxx — Shared / common screens (login, profile, notifications, etc.)
+
+(List 20–35 screens total across all actor groups)
+
+For each screen that has complex behaviour, add a detail block:
+#### [ID]: [Screen Name]
+**Purpose:** one sentence
+**Primary Actions:** bullet list of what the user can do
+**Data Displayed:** bullet list of key data shown
+**Validation / Business Rules:** any rules enforced on this screen
+**Empty / Error States:** what the screen shows when no data or an error occurs
+
+---
+
+## 14. Data Model
+
+For each of 8–14 core entities, define the data structure:
+
+### [Entity Name]
+```json
+{{
+  "id": "uuid — primary key",
+  "field_name": "type — description (constraints, e.g. required, unique, max length)",
+  "...": "..."
+}}
+```
+**Relationships:**
+- Belongs to: [other entities]
+- Has many: [other entities]
+- Many-to-many with: [other entities] (through [junction])
+
+**Indexes:** list fields that need database indexes for performance
+**Notes:** any important business rules tied to this entity's data""",
+
+        7: """## 15. API Contract
+
+Group all endpoints by domain. For each endpoint:
+
+| Method | Path | Description | Auth Required | Request | Response | Status Codes |
+|---|---|---|---|---|---|---|
+
+Use these domain groups (add/remove as needed based on the BRD):
+- Auth & Session
+- User & Profile
+- [Core Domain 1] (e.g. Opportunities / Listings)
+- [Core Domain 2] (e.g. Applications / Registrations)
+- [Core Domain 3] (e.g. Check-in / Attendance)
+- Admin & Reporting
+- Notifications
+- File Uploads
+
+For each domain write a section header and table. Target 4–8 endpoints per domain, 40–60 endpoints total.
+
+---
+
+## 16. Permissions Matrix
+
+| Action / Feature | [Role 1] | [Role 2] | [Role 3] | [Role 4] | [Role 5] | Notes |
+|---|---|---|---|---|---|---|
+(30–50 rows covering all significant actions. Use: ✓ = allowed, ✗ = denied, Own = own records only, Org = own organisation only)
+
+Roles should match the Target Users section (e.g. Guest, Volunteer, Organizer, Admin, Super Admin).""",
+
+        8: """## 17. Validation Rules
+
+| Field | Rule ID | Rule | Error Message |
+|---|---|---|---|
+(VR-001 onwards. Cover all user-input fields across all forms. 25–40 rules total. Be specific: max lengths, regex patterns, cross-field rules, async uniqueness checks.)
+
+---
+
+## 18. Notification Requirements
+
+| Trigger Event | Channels | Recipient(s) | Template Summary | Timing | Priority |
+|---|---|---|---|---|---|
+(20–30 notification rules. Channels: Push, Email, In-App, SMS. Priority: Critical / High / Normal / Low.)
+
+---
+
+## 19. Reporting Requirements
+
+### 19.1 Operational Reports
+| Report | Description | Audience | Frequency | Filters |
+|---|---|---|---|---|
+(10–15 operational reports)
+
+### 19.2 Analytics & Dashboards
+| Dashboard / Widget | Metrics Shown | Audience | Update Frequency |
+|---|---|---|---|
+(6–10 dashboard components)
+
+### 19.3 Export Requirements
+| Export Type | Format | Fields | Audience |
+|---|---|---|---|
+(4–8 data export types: CSV, PDF, Excel, etc.)""",
+
+        9: """## 20. Non-Functional Requirements
+
+| NFR ID | Category | Requirement | Metric / Target | Priority |
+|---|---|---|---|---|
+(NFR-001 onwards. 20–30 rows covering: Performance, Scalability, Availability, Security, Privacy/GDPR, Accessibility/WCAG, Internationalisation, Maintainability, Observability/Logging, Disaster Recovery)
+
+---
+
+## 21. Error Handling
+
+### 21.1 Error Response Format
+Define the standard API error response structure:
+```json
+{{
+  "error": {{
+    "code": "ERROR_CODE",
+    "message": "Human-readable message",
+    "field": "affected_field_if_applicable",
+    "details": {{}}
+  }}
+}}
+```
+
+### 21.2 Error Code Reference
+| Error Code | HTTP Status | Scenario | User-Facing Message |
+|---|---|---|---|
+(25–40 error codes covering auth, validation, not found, conflict, rate limit, server error cases)
+
+### 21.3 Client-Side Error Handling
+Describe how the frontend should handle each category of error (network timeout, 4xx, 5xx, validation, optimistic update rollback).
+
+---
+
+## 22. Edge Cases
+
+List 15–25 edge cases that engineers and QA must handle. Group by module:
+
+### [Module Name]
+- **[EC-XXX]:** [scenario] → [expected behaviour]
+- **[EC-XXX]:** [scenario] → [expected behaviour]
+
+Cover: concurrent operations, boundary conditions, empty states, permission edge cases, race conditions, data integrity edge cases.""",
+
+        10: """## 23. AI Coding Guidance
+
+This section gives AI coding assistants (e.g. GitHub Copilot, Claude Code, Cursor) explicit context to generate high-quality, consistent code.
+
+### 23.1 Tech Stack
+List the exact technologies, frameworks, versions, and libraries to be used (frontend, backend, database, infra, testing).
+
+### 23.2 Code Style & Conventions
+- Naming conventions (files, components, functions, variables, database columns)
+- File and folder structure
+- Preferred patterns (e.g. repository pattern, service layer, feature slices)
+- Error handling approach
+- Logging conventions
+
+### 23.3 Critical Business Logic Notes
+List 8–12 non-obvious business rules that an AI must know to generate correct code (e.g. "Capacity is calculated from confirmed applications only, not pending ones").
+
+### 23.4 Anti-Patterns to Avoid
+Bullet list of 6–10 patterns explicitly banned in this codebase (e.g. "Never expose internal IDs in public API responses", "Never store PII in logs").
+
+### 23.5 Testing Requirements
+- Required test types per layer (unit, integration, e2e)
+- Minimum coverage targets
+- Test naming conventions
+- Key scenarios that must have test coverage
+
+---
+
+## 24. User Stories
+
+Group stories by Epic. For each Epic:
+
+### Epic EP-[N]: [Epic Name]
+**Goal:** one sentence describing what this epic enables.
+
+| Story ID | As a... | I want to... | So that... | Priority | Acceptance Criteria |
+|---|---|---|---|---|---|
+(US-[EP]-001 onwards. 4–8 stories per epic. Priority: Must Have / Should Have / Could Have. AC: specific, testable, "Given/When/Then" where helpful.)
+
+(Create 8–12 epics covering all major product areas from the BRD. Total: 50–80 user stories.)""",
+    }
+
+    total = len(PRD_PHASES)
+    return f"""{_PRD_SYSTEM}
+
+**Approved BRD Content (primary input — extract all details from this):**
+---
+{brd_content[:6000]}
+---
+{prior_block}
+**Phase {phase_num}/{total} — {phase_name}**
+
+{instructions[phase_num]}"""
+
+
+def generate_prd_from_brd(brd_content: str, phase_callback=None) -> dict:
+    """Generate PRD phase by phase from an approved BRD.
+    phase_callback(phase_num, total) is called after each phase completes.
+    Returns {phases: [...], full_prd: str}."""
+    total = len(PRD_PHASES)
+    accumulated = ""
+    sections = []
+
+    for phase_num, phase_name in PRD_PHASES:
+        log.info(f"PRD phase {phase_num}/{total}: {phase_name}")
+        try:
+            prompt = _prd_phase_prompt(phase_num, phase_name, brd_content, accumulated)
+            content = _chat(prompt, max_tokens=4000)
+            sections.append(content)
+            accumulated += "\n\n" + content
+        except Exception as e:
+            log.error(f"PRD phase {phase_num} failed: {e}")
+            sections.append(f"\n\n> Section generation failed for Phase {phase_num}: {e}\n\n")
+
+        if phase_callback:
+            try:
+                phase_callback(phase_num, total)
+            except Exception:
+                pass
+
+    full_prd = "\n\n".join(sections)
+    return {"phases": sections, "full_prd": full_prd}
+
+
+def update_prd_from_feedback(prd_content: str, feedback: str) -> dict:
+    """Update PRD based on reviewer feedback.
+    Returns {updated_prd, change_summary, changed_sections}."""
+    prompt = f"""You are a senior product manager updating a Product Requirements Document (PRD) based on feedback.
+
+Feedback:
+{feedback}
+
+Current PRD:
+{prd_content[:12000]}
+
+Instructions:
+1. Update ONLY the sections that need to change based on the feedback.
+2. Keep all other sections word-for-word identical.
+3. List the exact section headings you changed (e.g. "3. Functional Feature Requirements & User Stories").
+4. Write a 2-3 sentence summary of what changed and why.
+
+Respond EXACTLY in this format (no text before CHANGE_SUMMARY):
+CHANGE_SUMMARY: <2-3 sentence summary>
+CHANGED_SECTIONS: <comma-separated exact section headings that were changed>
+UPDATED_PRD:
+<full updated PRD in markdown>"""
+
+    text = _chat(prompt, max_tokens=8000)
+
+    change_summary = ""
+    changed_sections = []
+    updated_prd = prd_content  # fallback
+
+    if "UPDATED_PRD:" in text:
+        parts = text.split("UPDATED_PRD:", 1)
+        header = parts[0]
+        updated_prd = parts[1].strip()
+        for line in header.splitlines():
+            s = line.strip()
+            if s.startswith("CHANGE_SUMMARY:"):
+                change_summary = s[15:].strip()
+            elif s.startswith("CHANGED_SECTIONS:"):
+                raw = s[17:].strip()
+                changed_sections = [x.strip() for x in raw.split(",") if x.strip()]
+
+    return {
+        "updated_prd": updated_prd,
+        "change_summary": change_summary,
+        "changed_sections": changed_sections,
+    }
+
+
 def build_full_story(phases: list[dict]) -> str:
     """Combine all completed phases into a single markdown document."""
     parts = []
