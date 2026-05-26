@@ -1,7 +1,9 @@
+import io
 import logging
 import re
+from pathlib import Path
 from datetime import datetime
-from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException
+from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
 from ..database import get_db
 from .. import models, schemas
@@ -18,14 +20,20 @@ router = APIRouter(prefix="/api/notes", tags=["notes"])
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _combined_notes(note: models.MeetingNote) -> str:
-    """Combine all note entries chronologically into a single string."""
+    """Combine all note entries and attachment text chronologically."""
     entries = sorted(note.entries or [], key=lambda e: e.created_at)
+    parts = []
     if entries:
-        return "\n\n---\n\n".join(
+        parts.extend(
             f"[Entry {i + 1} — {e.created_at.strftime('%Y-%m-%d %H:%M')}]\n{e.content}"
             for i, e in enumerate(entries)
         )
-    return note.raw_notes
+    else:
+        parts.append(note.raw_notes)
+    for att in (note.attachments or []):
+        if att.content_text:
+            parts.append(f"[Attachment: {att.filename}]\n{att.content_text}")
+    return "\n\n---\n\n".join(parts)
 
 
 def _build_brd_issue_body(note: models.MeetingNote, brd_markdown: str) -> str:
@@ -286,6 +294,8 @@ def add_entry(
 
     entry = models.NoteEntry(note_id=note.id, content=body.content)
     db.add(entry)
+    if body.wiki_url is not None:
+        note.wiki_url = body.wiki_url if body.wiki_url.strip() else None
     db.commit()
     db.refresh(note)
     return note
@@ -310,6 +320,61 @@ def list_entries(
         .all()
     )
     return {"entries": entries, "total": len(entries)}
+
+
+@router.post("/{note_id}/attachments", response_model=schemas.NoteAttachmentResponse, status_code=201)
+def upload_attachment(
+    note_id: str,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    note = db.query(models.MeetingNote).filter(
+        models.MeetingNote.id == note_id,
+        models.MeetingNote.creator_id == current_user.id,
+    ).first()
+    if not note:
+        raise HTTPException(status_code=404, detail="Note not found")
+
+    uploads_dir = Path("uploads") / note_id
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+
+    safe_name = re.sub(r"[^\w.\-]", "_", file.filename or "file")
+    file_path = uploads_dir / safe_name
+    content = file.file.read()
+    file_path.write_bytes(content)
+
+    mime = file.content_type or ""
+    content_text: str | None = None
+
+    if "text" in mime:
+        content_text = content.decode("utf-8", errors="ignore")
+    elif "pdf" in mime:
+        try:
+            import pypdf
+            reader = pypdf.PdfReader(io.BytesIO(content))
+            content_text = "\n".join(p.extract_text() or "" for p in reader.pages)
+        except Exception:
+            pass
+
+    attachment = models.NoteAttachment(
+        note_id=note_id,
+        filename=file.filename or safe_name,
+        mime_type=mime,
+        file_path=str(file_path),
+        content_text=content_text or None,
+    )
+    db.add(attachment)
+    db.commit()
+    db.refresh(attachment)
+    return {
+        "id": attachment.id,
+        "note_id": attachment.note_id,
+        "filename": attachment.filename,
+        "mime_type": attachment.mime_type,
+        "has_text": attachment.content_text is not None,
+        "created_at": attachment.created_at,
+    }
 
 
 @router.post("/{note_id}/mark-ready", response_model=schemas.MeetingNoteResponse, status_code=202)

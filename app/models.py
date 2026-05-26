@@ -122,6 +122,7 @@ class MeetingNote(Base):
     creator = relationship("User")
     versions = relationship("BrdVersion", back_populates="note", order_by="BrdVersion.version_number")
     entries = relationship("NoteEntry", back_populates="note", order_by="NoteEntry.created_at")
+    attachments = relationship("NoteAttachment", back_populates="note", order_by="NoteAttachment.created_at")
 
 
 class NoteEntry(Base):
@@ -133,6 +134,20 @@ class NoteEntry(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     note = relationship("MeetingNote", back_populates="entries")
+
+
+class NoteAttachment(Base):
+    __tablename__ = "note_attachments"
+
+    id = Column(String, primary_key=True, default=gen_id)
+    note_id = Column(String, ForeignKey("meeting_notes.id"))
+    filename = Column(String, nullable=False)
+    mime_type = Column(String, nullable=False)
+    file_path = Column(String, nullable=False)
+    content_text = Column(Text, nullable=True)  # extracted text included in BRD context
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    note = relationship("MeetingNote", back_populates="attachments")
 
 
 class BrdVersion(Base):

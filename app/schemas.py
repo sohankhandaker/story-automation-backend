@@ -158,6 +158,7 @@ class BrdFeedbackRequest(BaseModel):
 
 class NoteEntryCreate(BaseModel):
     content: str
+    wiki_url: Optional[str] = None
 
 
 class NoteEntryResponse(BaseModel):
@@ -201,6 +202,20 @@ class BrdVersionResponse(BaseModel):
 class BrdVersionListResponse(BaseModel):
     versions: List[BrdVersionResponse]
     total: int
+
+
+# ── Note Attachment ───────────────────────────────────────────────────────────
+
+class NoteAttachmentResponse(BaseModel):
+    id: str
+    note_id: str
+    filename: str
+    mime_type: str
+    has_text: bool = False
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
 
 
 # ── Device token ──────────────────────────────────────────────────────────────

@@ -16,3 +16,4 @@ pydantic-settings==2.5.2
 apscheduler==3.10.4
 aiosqlite==0.20.0
 beautifulsoup4==4.12.3
+pypdf>=4.0.0
