@@ -412,12 +412,15 @@ def _poll_github():
             _check_reviewer_comments(db, task)
             _check_done_status(db, task)
 
-        # BRD notes in review
+        # BRD notes in review (has at least one reviewer assigned)
         brd_notes = db.query(models.MeetingNote).filter(
             models.MeetingNote.status.in_(["In Review", "Changes Requested"]),
             models.MeetingNote.github_issue_number.isnot(None),
-            models.MeetingNote.reviewer_github_username.isnot(None),
         ).all()
+        brd_notes = [
+            n for n in brd_notes
+            if (n.reviewers and len(n.reviewers) > 0) or n.reviewer_github_username
+        ]
 
         for note in brd_notes:
             _check_brd_reviewer_comments(db, note)
@@ -572,11 +575,17 @@ def _check_brd_reviewer_comments(db: Session, note: models.MeetingNote):
         note.github_last_checked_at = datetime.utcnow()
         db.commit()
 
+        # Build set of all assigned reviewer usernames
+        reviewer_usernames = {
+            r["github_username"].lower() for r in (note.reviewers or [])
+        }
+        if not reviewer_usernames and note.reviewer_github_username:
+            reviewer_usernames = {note.reviewer_github_username.lower()}
+
         processed = set(str(c) for c in (note.processed_comment_ids or []))
-        reviewer = note.reviewer_github_username.lower() if note.reviewer_github_username else ""
         new_comments = [
             c for c in comments
-            if c["user"]["login"].lower() == reviewer
+            if c["user"]["login"].lower() in reviewer_usernames
             and str(c["id"]) not in processed
         ]
         if not new_comments:
@@ -588,11 +597,38 @@ def _check_brd_reviewer_comments(db: Session, note: models.MeetingNote):
         processed_list = list(note.processed_comment_ids or [])
         processed_list.extend(str(c["id"]) for c in new_comments)
         note.processed_comment_ids = processed_list
+        flag_modified(note, "processed_comment_ids")
         db.commit()
 
         if approval:
-            threading.Thread(target=run_brd_approved, args=(note.id,), daemon=True).start()
-        elif feedback:
+            # Mark each approving reviewer as Approved in the reviewers list
+            approvers = {c["user"]["login"].lower() for c in approval}
+            reviewers = list(note.reviewers or [])
+            for r in reviewers:
+                if r["github_username"].lower() in approvers:
+                    r["status"] = "Approved"
+            note.reviewers = reviewers
+            flag_modified(note, "reviewers")
+            db.commit()
+
+            all_approved = all(r["status"] == "Approved" for r in reviewers) if reviewers else True
+            if all_approved:
+                threading.Thread(target=run_brd_approved, args=(note.id,), daemon=True).start()
+            else:
+                # Some still pending — post a partial approval note on GitHub
+                pending = [r["github_username"] for r in reviewers if r["status"] != "Approved"]
+                try:
+                    approver_names = ", ".join(f"@{c['user']['login']}" for c in approval)
+                    gh.add_comment(
+                        note.github_issue_number,
+                        f"✅ {approver_names} approved the BRD.\n\n"
+                        f"Still waiting for approval from: {', '.join('@' + u for u in pending)}",
+                        cfg=cfg,
+                    )
+                except Exception as e:
+                    log.warning(f"Failed to post partial approval comment: {e}")
+
+        if feedback:
             comment_texts = [c["body"] for c in feedback]
             comment_ids = [c["id"] for c in feedback]
             threading.Thread(

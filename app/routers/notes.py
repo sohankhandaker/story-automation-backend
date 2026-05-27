@@ -5,6 +5,7 @@ from pathlib import Path
 from datetime import datetime
 from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 from ..database import get_db
 from .. import models, schemas
 from ..deps import get_current_user
@@ -450,22 +451,37 @@ def assign_reviewer(
         except Exception as e:
             log.warning(f"Board status update failed: {e}")
 
+    # Append to reviewers list (no duplicates)
+    reviewers = list(note.reviewers or [])
+    existing_usernames = {r["github_username"].lower() for r in reviewers}
+    is_new = body.reviewer_github_username.lower() not in existing_usernames
+    if is_new:
+        reviewers.append({
+            "github_username": body.reviewer_github_username,
+            "name": body.reviewer_name or body.reviewer_github_username,
+            "status": "Pending",
+        })
+        note.reviewers = reviewers
+        flag_modified(note, "reviewers")
+
+    # Keep single-reviewer fields pointing to the last assigned (for backward compat)
     note.reviewer_github_username = body.reviewer_github_username
     note.reviewer_name = body.reviewer_name
     note.status = "In Review"
     db.commit()
     db.refresh(note)
 
-    try:
-        gh.add_comment(
-            note.github_issue_number,
-            f"👋 @{body.reviewer_github_username} — this BRD has been assigned to you for review.\n\n"
-            f"The full Business Requirements Document is in the issue description above.\n\n"
-            f"> Reply **`APPROVED`** to approve, or leave detailed feedback below and the AI agent will update the BRD automatically.",
-            cfg=cfg,
-        )
-    except Exception as e:
-        log.warning(f"Failed to post assignment comment: {e}")
+    if is_new:
+        try:
+            gh.add_comment(
+                note.github_issue_number,
+                f"👋 @{body.reviewer_github_username} — this BRD has been assigned to you for review.\n\n"
+                f"The full Business Requirements Document is in the issue description above.\n\n"
+                f"> Reply **`APPROVED`** to approve, or leave detailed feedback below and the AI agent will update the BRD automatically.",
+                cfg=cfg,
+            )
+        except Exception as e:
+            log.warning(f"Failed to post assignment comment: {e}")
 
     return note
 

@@ -40,6 +40,7 @@ def _migrate():
         ("meeting_notes", "github_project_item_id", "VARCHAR"),
         ("meeting_notes", "reviewer_github_username", "VARCHAR"),
         ("meeting_notes", "reviewer_name", "VARCHAR"),
+        ("meeting_notes", "reviewers", "JSON"),
         ("meeting_notes", "github_last_checked_at", "TIMESTAMP"),
         ("meeting_notes", "processed_comment_ids", "JSON"),
         # PRD columns are on new tables created by create_all, no ALTER needed.

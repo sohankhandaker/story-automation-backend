@@ -114,6 +114,7 @@ class MeetingNote(Base):
     github_project_item_id = Column(String, nullable=True)
     reviewer_github_username = Column(String, nullable=True)
     reviewer_name = Column(String, nullable=True)
+    reviewers = Column(JSON, default=list)  # [{github_username, name, status}]
     github_last_checked_at = Column(DateTime, nullable=True)
     processed_comment_ids = Column(JSON, default=list)
     created_at = Column(DateTime, default=datetime.utcnow)
