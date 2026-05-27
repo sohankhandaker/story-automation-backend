@@ -27,30 +27,47 @@ def _use_openrouter() -> bool:
     return bool(settings.openrouter_api_key)
 
 
-def _chat(prompt: str, max_tokens: int = 1500) -> str:
+def _chat(prompt: str, max_tokens: int = 1500, retries: int = 3) -> str:
     """
     Unified chat call. Uses OpenRouter if OPENROUTER_API_KEY is set,
-    otherwise falls back to Anthropic SDK.
+    otherwise falls back to Anthropic SDK. Retries on empty/None responses.
     """
-    if _use_openrouter():
-        client = OpenAI(
-            api_key=settings.openrouter_api_key,
-            base_url="https://openrouter.ai/api/v1",
-        )
-        resp = client.chat.completions.create(
-            model=settings.openrouter_model,
-            max_tokens=max_tokens,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return resp.choices[0].message.content.strip()
-    else:
-        client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-        msg = client.messages.create(
-            model=settings.anthropic_model,
-            max_tokens=max_tokens,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return msg.content[0].text.strip()
+    import time
+
+    last_err = None
+    for attempt in range(1, retries + 1):
+        try:
+            if _use_openrouter():
+                client = OpenAI(
+                    api_key=settings.openrouter_api_key,
+                    base_url="https://openrouter.ai/api/v1",
+                )
+                resp = client.chat.completions.create(
+                    model=settings.openrouter_model,
+                    max_tokens=max_tokens,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                content = resp.choices[0].message.content
+                if not content:
+                    finish = resp.choices[0].finish_reason
+                    raise ValueError(f"Empty response from model (finish_reason={finish})")
+                return content.strip()
+            else:
+                client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+                msg = client.messages.create(
+                    model=settings.anthropic_model,
+                    max_tokens=max_tokens,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                return msg.content[0].text.strip()
+        except Exception as e:
+            last_err = e
+            if attempt < retries:
+                wait = 5 * attempt
+                log.warning(f"_chat attempt {attempt} failed ({e}), retrying in {wait}s…")
+                time.sleep(wait)
+
+    raise last_err
 
 
 def extract_backlog_info(chat_message: str) -> dict:
