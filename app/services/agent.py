@@ -172,7 +172,8 @@ BRD_PHASES = [
     (4, "Stakeholders, Personas & Governance"),
     (5, "Business Processes & Functional Requirements"),
     (6, "Non-Functional Requirements, Data, Integrations & Business Rules"),
-    (7, "KPIs, Roadmap, Risks, Acceptance Criteria & Checklists"),
+    (7, "KPIs, Roadmap & MVP Scope"),
+    (8, "Risks, Acceptance Criteria, Dependencies & Checklists"),
 ]
 
 _BRD_SYSTEM = """You are a senior business analyst producing a professional, international-standard Business Requirements Document (BRD).
@@ -421,7 +422,7 @@ Bullet list of PII and sensitive fields.
 |---|---|
 (BR-001 to BR-016+)""",
 
-        7: """Generate sections 19–21 and 27–37 (condensed but complete).
+        7: """Generate sections 19–21.
 
 ## 19. Reporting Requirements
 
@@ -462,9 +463,9 @@ Goal and possible additions.
 Goal and possible additions.
 
 ### 21.6 Phase 4 — Ecosystem
-Goal and possible additions.
+Goal and possible additions.""",
 
----
+        8: """Generate sections 27–37 (condensed but complete).
 
 ## 27. Acceptance Criteria
 | ID | Acceptance Criteria |
@@ -512,7 +513,7 @@ Goal and possible additions.
 {raw_notes[:4000]}
 ---
 {analysis_block}{wiki_block}{prior_block}
-**Phase {phase_num}/7 — {phase_name}**
+**Phase {phase_num}/8 — {phase_name}**
 
 {instructions[phase_num]}"""
 
@@ -583,7 +584,7 @@ def enhance_notes_to_brd(
         log.info(f"BRD phase {phase_num}/{total}: {phase_name}")
         try:
             prompt = _brd_phase_prompt(phase_num, phase_name, raw_notes, wiki_content, accumulated, analysis)
-            content = _chat(prompt, max_tokens=3500)
+            content = _chat(prompt, max_tokens=5000)
             sections.append(content)
             accumulated += "\n\n" + content
         except Exception as e:
