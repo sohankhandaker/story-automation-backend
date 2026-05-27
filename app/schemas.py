@@ -238,6 +238,7 @@ class PrdResponse(BaseModel):
     github_issue_number: Optional[int] = None
     reviewer_github_username: Optional[str] = None
     reviewer_name: Optional[str] = None
+    reviewers: List[Any] = []
     created_at: datetime
     updated_at: datetime
 

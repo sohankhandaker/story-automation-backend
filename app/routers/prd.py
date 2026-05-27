@@ -2,6 +2,7 @@ import logging
 from datetime import datetime
 from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 from ..database import get_db
 from .. import models, schemas
 from ..deps import get_current_user
@@ -352,22 +353,36 @@ def assign_prd_reviewer(
         except Exception as e:
             log.warning(f"PRD board status update failed: {e}")
 
+    # Append to reviewers list (no duplicates)
+    reviewers = list(prd.reviewers or [])
+    existing_usernames = {r["github_username"].lower() for r in reviewers}
+    is_new = body.reviewer_github_username.lower() not in existing_usernames
+    if is_new:
+        reviewers.append({
+            "github_username": body.reviewer_github_username,
+            "name": body.reviewer_name or body.reviewer_github_username,
+            "status": "Pending",
+        })
+        prd.reviewers = reviewers
+        flag_modified(prd, "reviewers")
+
     prd.reviewer_github_username = body.reviewer_github_username
     prd.reviewer_name = body.reviewer_name
     prd.status = "In Review"
     db.commit()
     db.refresh(prd)
 
-    try:
-        gh.add_comment(
-            prd.github_issue_number,
-            f"@{body.reviewer_github_username} — this PRD has been assigned to you for review.\n\n"
-            f"The full Product Requirements Document is in the issue description above.\n\n"
-            f"> Reply **`APPROVED`** to approve, or leave detailed feedback below and the AI agent will update the PRD automatically.",
-            cfg=cfg,
-        )
-    except Exception as e:
-        log.warning(f"Failed to post PRD assignment comment: {e}")
+    if is_new:
+        try:
+            gh.add_comment(
+                prd.github_issue_number,
+                f"@{body.reviewer_github_username} — this PRD has been assigned to you for review.\n\n"
+                f"The full Product Requirements Document is in the issue description above.\n\n"
+                f"> Reply **`APPROVED`** to approve, or leave detailed feedback below and the AI agent will update the PRD automatically.",
+                cfg=cfg,
+            )
+        except Exception as e:
+            log.warning(f"Failed to post PRD assignment comment: {e}")
 
     return prd
 

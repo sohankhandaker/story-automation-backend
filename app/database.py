@@ -43,8 +43,8 @@ def _migrate():
         ("meeting_notes", "reviewers", "JSON"),
         ("meeting_notes", "github_last_checked_at", "TIMESTAMP"),
         ("meeting_notes", "processed_comment_ids", "JSON"),
-        # PRD columns are on new tables created by create_all, no ALTER needed.
-        # Keep this list for any future column additions.
+        # prd_documents new columns
+        ("prd_documents", "reviewers", "JSON"),
     ]
     is_sqlite = settings.database_url.startswith("sqlite")
     with engine.connect() as conn:
