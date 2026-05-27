@@ -608,43 +608,94 @@ def enhance_notes_to_brd(
     return {"title": title, "brd_markdown": brd}
 
 
+def _split_sections(markdown: str) -> list[tuple[str, str]]:
+    """Split markdown into [(heading_line, body), ...].
+    heading_line is '' for content before the first heading."""
+    import re
+    sections: list[tuple[str, str]] = []
+    current_heading = ""
+    current_lines: list[str] = []
+    for line in markdown.splitlines():
+        if re.match(r"^#{1,4}\s", line):
+            sections.append((current_heading, "\n".join(current_lines)))
+            current_heading = line.rstrip()
+            current_lines = []
+        else:
+            current_lines.append(line)
+    sections.append((current_heading, "\n".join(current_lines)))
+    return sections
+
+
+def _merge_section_updates(original: str, updates: str) -> str:
+    """Splice updated sections into the original document.
+    Only sections whose headings appear in *updates* are replaced; all
+    others are kept verbatim from *original*."""
+    import re
+
+    def _norm(h: str) -> str:
+        return re.sub(r"^#+\s*", "", h).strip().lower()
+
+    update_map = {
+        _norm(h): (h, body)
+        for h, body in _split_sections(updates)
+        if h
+    }
+
+    parts: list[str] = []
+    for heading, body in _split_sections(original):
+        key = _norm(heading)
+        if heading and key in update_map:
+            new_h, new_body = update_map[key]
+            parts.append(new_h)
+            if new_body.strip():
+                parts.append(new_body)
+        else:
+            if heading:
+                parts.append(heading)
+            if body.strip() or not heading:
+                parts.append(body)
+
+    return "\n".join(parts)
+
+
 def update_brd_from_feedback(
     current_brd: str,
     reviewer_comments: list[str],
 ) -> dict:
     """Update BRD sections based on reviewer feedback.
-    Returns {updated_markdown, change_summary, changed_sections}."""
+    Returns {updated_markdown, change_summary, changed_sections}.
+
+    Uses a surgical approach: the model outputs ONLY the changed sections,
+    then Python merges them back into the full document — avoiding token-limit
+    truncation that would silently drop unchanged sections."""
     comments_text = "\n".join(f"- {c}" for c in reviewer_comments)
-    prompt = f"""You are a senior business analyst updating a Business Requirements Document (BRD) based on reviewer feedback.
+    prompt = f"""You are a senior business analyst updating a Business Requirements Document (BRD).
 
 Reviewer Feedback:
 {comments_text}
 
 Current BRD:
-{current_brd[:12000]}
+{current_brd}
 
-Instructions:
-1. Update ONLY the sections that need to change based on the feedback.
-2. Keep all other sections word-for-word identical.
-3. List the exact section headings you changed (e.g. "6. Non-Functional Requirements").
-4. Write a 2-3 sentence summary of what changed and why.
+IMPORTANT: Output ONLY the sections that need to change — do NOT repeat unchanged sections.
+Each changed section must start with its exact heading (##, ###, etc.) as it appears above.
 
-Respond EXACTLY in this format (no text before CHANGE_SUMMARY):
-CHANGE_SUMMARY: <2-3 sentence summary>
+Respond EXACTLY in this format:
+CHANGE_SUMMARY: <2-3 sentence summary of what changed and why>
 CHANGED_SECTIONS: <comma-separated exact section headings that were changed>
-UPDATED_BRD:
-<full updated BRD in markdown>"""
+SECTION_UPDATES:
+<heading and full new content for each changed section only>"""
 
-    text = _chat(prompt, max_tokens=7000)
+    text = _chat(prompt, max_tokens=6000)
 
     change_summary = ""
     changed_sections = []
-    updated_markdown = current_brd  # fallback if parse fails
+    section_updates = ""
 
-    if "UPDATED_BRD:" in text:
-        parts = text.split("UPDATED_BRD:", 1)
+    if "SECTION_UPDATES:" in text:
+        parts = text.split("SECTION_UPDATES:", 1)
         header = parts[0]
-        updated_markdown = parts[1].strip()
+        section_updates = parts[1].strip()
         for line in header.splitlines():
             s = line.strip()
             if s.startswith("CHANGE_SUMMARY:"):
@@ -652,6 +703,8 @@ UPDATED_BRD:
             elif s.startswith("CHANGED_SECTIONS:"):
                 raw = s[17:].strip()
                 changed_sections = [x.strip() for x in raw.split(",") if x.strip()]
+
+    updated_markdown = _merge_section_updates(current_brd, section_updates) if section_updates else current_brd
 
     return {
         "updated_markdown": updated_markdown,
@@ -1086,37 +1139,36 @@ def generate_prd_from_brd(brd_content: str, phase_callback=None) -> dict:
 
 def update_prd_from_feedback(prd_content: str, feedback: str) -> dict:
     """Update PRD based on reviewer feedback.
-    Returns {updated_prd, change_summary, changed_sections}."""
-    prompt = f"""You are a senior product manager updating a Product Requirements Document (PRD) based on feedback.
+    Returns {updated_prd, change_summary, changed_sections}.
+
+    Uses the same surgical section-merge approach as update_brd_from_feedback."""
+    prompt = f"""You are a senior product manager updating a Product Requirements Document (PRD).
 
 Feedback:
 {feedback}
 
 Current PRD:
-{prd_content[:12000]}
+{prd_content}
 
-Instructions:
-1. Update ONLY the sections that need to change based on the feedback.
-2. Keep all other sections word-for-word identical.
-3. List the exact section headings you changed (e.g. "3. Functional Feature Requirements & User Stories").
-4. Write a 2-3 sentence summary of what changed and why.
+IMPORTANT: Output ONLY the sections that need to change — do NOT repeat unchanged sections.
+Each changed section must start with its exact heading (##, ###, etc.) as it appears above.
 
-Respond EXACTLY in this format (no text before CHANGE_SUMMARY):
-CHANGE_SUMMARY: <2-3 sentence summary>
+Respond EXACTLY in this format:
+CHANGE_SUMMARY: <2-3 sentence summary of what changed and why>
 CHANGED_SECTIONS: <comma-separated exact section headings that were changed>
-UPDATED_PRD:
-<full updated PRD in markdown>"""
+SECTION_UPDATES:
+<heading and full new content for each changed section only>"""
 
-    text = _chat(prompt, max_tokens=8000)
+    text = _chat(prompt, max_tokens=6000)
 
     change_summary = ""
     changed_sections = []
-    updated_prd = prd_content  # fallback
+    section_updates = ""
 
-    if "UPDATED_PRD:" in text:
-        parts = text.split("UPDATED_PRD:", 1)
+    if "SECTION_UPDATES:" in text:
+        parts = text.split("SECTION_UPDATES:", 1)
         header = parts[0]
-        updated_prd = parts[1].strip()
+        section_updates = parts[1].strip()
         for line in header.splitlines():
             s = line.strip()
             if s.startswith("CHANGE_SUMMARY:"):
@@ -1124,6 +1176,8 @@ UPDATED_PRD:
             elif s.startswith("CHANGED_SECTIONS:"):
                 raw = s[17:].strip()
                 changed_sections = [x.strip() for x in raw.split(",") if x.strip()]
+
+    updated_prd = _merge_section_updates(prd_content, section_updates) if section_updates else prd_content
 
     return {
         "updated_prd": updated_prd,
