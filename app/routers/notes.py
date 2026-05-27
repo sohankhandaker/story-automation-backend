@@ -77,7 +77,10 @@ def _full_brd_pipeline(note_id: str):
 
         urls_to_crawl = []
         if note.wiki_url:
-            urls_to_crawl.append(note.wiki_url)
+            for u in note.wiki_url.split('\n'):
+                u = u.strip()
+                if u:
+                    urls_to_crawl.append(u)
         for u in re.findall(r'https?://[^\s<>"{}|\\^`\[\]]+', combined)[:3]:
             if u not in urls_to_crawl:
                 urls_to_crawl.append(u)
