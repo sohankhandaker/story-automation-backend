@@ -31,8 +31,13 @@ def _chat(prompt: str, max_tokens: int = 1500, retries: int = 3) -> str:
     """
     Unified chat call. Uses OpenRouter if OPENROUTER_API_KEY is set,
     otherwise falls back to Anthropic SDK. Retries on empty/None responses.
+    Timeout: 180 s per attempt to prevent silent hangs on slow model responses.
     """
     import time
+
+    # Per-attempt timeout in seconds — long enough for large BRD/PRD phases
+    # but bounded so a hung request doesn't freeze the pipeline indefinitely.
+    _TIMEOUT = 180.0
 
     last_err = None
     for attempt in range(1, retries + 1):
@@ -41,6 +46,8 @@ def _chat(prompt: str, max_tokens: int = 1500, retries: int = 3) -> str:
                 client = OpenAI(
                     api_key=settings.openrouter_api_key,
                     base_url="https://openrouter.ai/api/v1",
+                    timeout=_TIMEOUT,
+                    max_retries=0,  # we handle retries ourselves
                 )
                 resp = client.chat.completions.create(
                     model=settings.openrouter_model,
@@ -53,7 +60,11 @@ def _chat(prompt: str, max_tokens: int = 1500, retries: int = 3) -> str:
                     raise ValueError(f"Empty response from model (finish_reason={finish})")
                 return content.strip()
             else:
-                client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+                client = anthropic.Anthropic(
+                    api_key=settings.anthropic_api_key,
+                    timeout=_TIMEOUT,
+                    max_retries=0,
+                )
                 msg = client.messages.create(
                     model=settings.anthropic_model,
                     max_tokens=max_tokens,
