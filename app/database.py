@@ -47,6 +47,8 @@ def _migrate():
         ("prd_documents", "reviewers", "JSON"),
         # BRD Q&A: pending change proposals awaiting reviewer confirmation
         ("meeting_notes", "pending_brd_changes", "JSON"),
+        # PRD Q&A: same pattern as BRD
+        ("prd_documents", "pending_prd_changes", "JSON"),
     ]
     is_sqlite = settings.database_url.startswith("sqlite")
     with engine.connect() as conn:

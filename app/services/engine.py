@@ -455,6 +455,35 @@ def _poll_github():
             _check_brd_reviewer_comments(db, note)
             _check_brd_done_status(db, note)
 
+        # PRD documents in review (same structure as BRD notes)
+        prd_docs = db.query(models.PrdDocument).filter(
+            models.PrdDocument.status.in_(["In Review", "Changes Requested"]),
+            models.PrdDocument.github_issue_number.isnot(None),
+        ).all()
+        prd_docs = [
+            p for p in prd_docs
+            if (p.reviewers and len(p.reviewers) > 0) or p.reviewer_github_username
+        ]
+
+        for prd in prd_docs:
+            # Recovery: all reviewers already Approved in DB but status not flipped
+            if prd.reviewers:
+                all_already_approved = all(
+                    r.get("status") == "Approved" for r in prd.reviewers
+                )
+                if all_already_approved and prd.status != "Approved":
+                    log.info(
+                        f"Recovery: all PRD reviewers Approved in DB but status={prd.status} "
+                        f"for prd {prd.id} — triggering run_prd_approved"
+                    )
+                    threading.Thread(
+                        target=run_prd_approved, args=(prd.id,), daemon=True
+                    ).start()
+                    continue
+
+            _check_prd_reviewer_comments(db, prd)
+            _check_prd_done_status(db, prd)
+
     except Exception as e:
         log.error(f"Polling job error: {e}")
     finally:
@@ -905,6 +934,313 @@ def run_brd_approved(note_id: str):
 
     except Exception as e:
         log.error(f"run_brd_approved failed for note {note_id}: {e}")
+    finally:
+        db.close()
+
+
+# ── PRD polling helpers (mirror of BRD helpers) ───────────────────────────────
+
+def _check_prd_reviewer_comments(db: Session, prd: models.PrdDocument):
+    try:
+        note = db.query(models.MeetingNote).filter(models.MeetingNote.id == prd.note_id).first()
+        creator = db.query(models.User).filter(models.User.id == note.creator_id).first() if note else None
+        cfg = cfg_for_user(creator)
+
+        comments = gh.get_comments_since(prd.github_issue_number, prd.github_last_checked_at, cfg=cfg)
+        prd.github_last_checked_at = datetime.utcnow()
+        db.commit()
+
+        reviewer_usernames = {r["github_username"].lower() for r in (prd.reviewers or [])}
+        if not reviewer_usernames and prd.reviewer_github_username:
+            reviewer_usernames = {prd.reviewer_github_username.lower()}
+
+        processed = set(str(c) for c in (prd.processed_comment_ids or []))
+        new_comments = [
+            c for c in comments
+            if c["user"]["login"].lower() in reviewer_usernames
+            and str(c["id"]) not in processed
+        ]
+        if not new_comments:
+            return
+
+        confirmations  = [c for c in new_comments if _is_confirm_change(c["body"])]
+        approvals      = [c for c in new_comments if not _is_confirm_change(c["body"]) and _is_approval(c["body"])]
+        other_comments = [c for c in new_comments if not _is_confirm_change(c["body"]) and not _is_approval(c["body"])]
+
+        processed_list = list(prd.processed_comment_ids or [])
+        processed_list.extend(str(c["id"]) for c in new_comments)
+        prd.processed_comment_ids = processed_list
+        flag_modified(prd, "processed_comment_ids")
+        db.commit()
+
+        # CONFIRM CHANGES → apply pending proposal
+        if confirmations and prd.pending_prd_changes:
+            pending = prd.pending_prd_changes
+            log.info(f"Reviewer confirmed pending PRD changes for prd {prd.id}")
+            prd.pending_prd_changes = None
+            flag_modified(prd, "pending_prd_changes")
+            db.commit()
+            threading.Thread(
+                target=run_prd_review_comment,
+                args=(prd.id, [pending["feedback"]], []),
+                daemon=True,
+            ).start()
+            return
+
+        # APPROVED → mark reviewers and check all-approved
+        if approvals:
+            approvers = {c["user"]["login"].lower() for c in approvals}
+            reviewers = list(prd.reviewers or [])
+            for r in reviewers:
+                if r["github_username"].lower() in approvers:
+                    r["status"] = "Approved"
+            prd.reviewers = reviewers
+            flag_modified(prd, "reviewers")
+            db.commit()
+
+            all_approved = all(r["status"] == "Approved" for r in reviewers) if reviewers else True
+            if all_approved:
+                threading.Thread(target=run_prd_approved, args=(prd.id,), daemon=True).start()
+            else:
+                pending_reviewers = [r["github_username"] for r in reviewers if r["status"] != "Approved"]
+                try:
+                    approver_names = ", ".join(f"@{c['user']['login']}" for c in approvals)
+                    gh.add_comment(
+                        prd.github_issue_number,
+                        f"✅ {approver_names} approved the PRD.\n\n"
+                        f"Still waiting for approval from: {', '.join('@' + u for u in pending_reviewers)}",
+                        cfg=cfg,
+                    )
+                except Exception as e:
+                    log.warning(f"Failed to post partial PRD approval comment: {e}")
+
+        # Questions and change requests
+        questions = []
+        change_requests = []
+        for c in other_comments:
+            comment_type = agent.classify_brd_comment(c["body"])
+            log.info(f"PRD comment classified as '{comment_type}' for prd {prd.id}")
+            if comment_type == "question":
+                questions.append(c)
+            else:
+                change_requests.append(c)
+
+        for q in questions:
+            threading.Thread(
+                target=run_prd_answer_question,
+                args=(prd.id, q["body"], q["id"]),
+                daemon=True,
+            ).start()
+
+        if change_requests:
+            combined_feedback = "\n\n".join(c["body"] for c in change_requests)
+            comment_ids = [c["id"] for c in change_requests]
+            threading.Thread(
+                target=run_prd_propose_changes,
+                args=(prd.id, combined_feedback, comment_ids),
+                daemon=True,
+            ).start()
+
+    except Exception as e:
+        log.error(f"PRD comment check failed for prd {prd.id}: {e}")
+
+
+def _check_prd_done_status(db: Session, prd: models.PrdDocument):
+    if not prd.github_project_item_id:
+        return
+    try:
+        note = db.query(models.MeetingNote).filter(models.MeetingNote.id == prd.note_id).first()
+        creator = db.query(models.User).filter(models.User.id == note.creator_id).first() if note else None
+        cfg = cfg_for_user(creator)
+        current_status = gh.get_project_item_status(prd.github_project_item_id, cfg=cfg)
+        log.info(f"PRD board status for prd {prd.id}: '{current_status}' (prd.status='{prd.status}')")
+        if current_status and current_status.lower() == "done" and prd.status != "Approved":
+            log.info(f"PRD board moved to Done — triggering approval for prd {prd.id}")
+            threading.Thread(target=run_prd_approved, args=(prd.id,), daemon=True).start()
+    except Exception as e:
+        log.error(f"PRD done check failed for prd {prd.id}: {e}")
+
+
+def run_prd_answer_question(prd_id: str, question: str, comment_id: int):
+    """Answer a reviewer question about the PRD without modifying it."""
+    db = SessionLocal()
+    try:
+        prd = db.query(models.PrdDocument).filter(models.PrdDocument.id == prd_id).first()
+        if not prd or not prd.prd_draft:
+            return
+        note = db.query(models.MeetingNote).filter(models.MeetingNote.id == prd.note_id).first()
+        creator = db.query(models.User).filter(models.User.id == note.creator_id).first() if note else None
+        cfg = cfg_for_user(creator)
+
+        answer = agent.answer_brd_question(question, prd.prd_draft)
+        gh.add_comment(
+            prd.github_issue_number,
+            f"**Answer to your question:**\n\n{answer}\n\n"
+            f"---\n"
+            f"_The PRD has not been modified. If you'd like changes made, "
+            f"describe them and I'll propose an update for your confirmation._",
+            cfg=cfg,
+        )
+        log.info(f"Answered PRD question for prd {prd_id} (comment {comment_id})")
+    except Exception as e:
+        log.error(f"run_prd_answer_question failed for prd {prd_id}: {e}")
+    finally:
+        db.close()
+
+
+def run_prd_propose_changes(prd_id: str, feedback: str, comment_ids: list):
+    """Propose PRD changes without applying them; waits for CONFIRM CHANGES."""
+    db = SessionLocal()
+    try:
+        prd = db.query(models.PrdDocument).filter(models.PrdDocument.id == prd_id).first()
+        if not prd or not prd.prd_draft:
+            return
+        note = db.query(models.MeetingNote).filter(models.MeetingNote.id == prd.note_id).first()
+        creator = db.query(models.User).filter(models.User.id == note.creator_id).first() if note else None
+        cfg = cfg_for_user(creator)
+
+        summary = agent.propose_brd_change_summary(feedback, prd.prd_draft)
+
+        prd.pending_prd_changes = {
+            "feedback": feedback,
+            "summary": summary,
+            "comment_ids": [str(c) for c in comment_ids],
+        }
+        flag_modified(prd, "pending_prd_changes")
+        db.commit()
+
+        reviewer = f"@{prd.reviewer_github_username}" if prd.reviewer_github_username else "Reviewer"
+        gh.add_comment(
+            prd.github_issue_number,
+            f"**Proposed PRD Updates:**\n\n{summary}\n\n"
+            f"---\n"
+            f"{reviewer} — Reply **`CONFIRM CHANGES`** to apply these updates to the PRD, "
+            f"or provide additional feedback to refine them.\n\n"
+            f"_The PRD has not been modified yet._",
+            cfg=cfg,
+        )
+        log.info(f"Proposed PRD changes for prd {prd_id}, awaiting confirmation")
+    except Exception as e:
+        log.error(f"run_prd_propose_changes failed for prd {prd_id}: {e}")
+    finally:
+        db.close()
+
+
+def run_prd_review_comment(prd_id: str, comment_texts: list[str], comment_ids: list):
+    """Apply confirmed PRD changes from reviewer feedback."""
+    from ..routers.prd import _build_prd_issue_body, _build_prd_update_comment
+    db = SessionLocal()
+    try:
+        prd = db.query(models.PrdDocument).filter(models.PrdDocument.id == prd_id).first()
+        if not prd:
+            return
+        note = db.query(models.MeetingNote).filter(models.MeetingNote.id == prd.note_id).first()
+        creator = db.query(models.User).filter(models.User.id == note.creator_id).first() if note else None
+        cfg = cfg_for_user(creator)
+
+        processed = list(prd.processed_comment_ids or [])
+        processed.extend(str(c) for c in comment_ids)
+        prd.processed_comment_ids = processed
+        prd.status = "Changes Requested"
+        prd.prd_generation_phase = 0
+        db.commit()
+
+        if prd.github_issue_number:
+            gh.add_comment(prd.github_issue_number,
+                "🔄 Feedback confirmed. Updating the PRD…", cfg=cfg)
+
+        result = agent.update_prd_from_feedback(
+            prd_content=prd.prd_draft or "",
+            feedback="\n\n".join(comment_texts),
+        )
+
+        next_ver = (prd.current_version_number or 1) + 1
+        version = models.PrdVersion(
+            prd_id=prd.id,
+            version_number=next_ver,
+            prd_markdown=result["updated_prd"],
+            change_summary=result["change_summary"],
+            changed_sections=result["changed_sections"],
+            reviewer_comment="\n".join(comment_texts[:3]),
+        )
+        db.add(version)
+
+        prd.prd_draft = result["updated_prd"]
+        prd.current_version_number = next_ver
+        prd.prd_generation_phase = None
+        prd.status = "In Review"
+
+        if prd.github_issue_number and note:
+            try:
+                gh.update_issue_body(
+                    prd.github_issue_number,
+                    _build_prd_issue_body(note, result["updated_prd"]),
+                    cfg=cfg,
+                )
+                reviewer = f"@{prd.reviewer_github_username}" if prd.reviewer_github_username else "Reviewer"
+                gh.add_comment(
+                    prd.github_issue_number,
+                    _build_prd_update_comment(
+                        version=next_ver,
+                        change_summary=result["change_summary"],
+                        changed_sections=result["changed_sections"],
+                        reviewer_mention=reviewer,
+                    ),
+                    cfg=cfg,
+                )
+            except Exception as e:
+                log.warning(f"GitHub update failed after PRD review comment: {e}")
+
+        db.commit()
+        log.info(f"PRD {prd_id} updated to v{next_ver} from reviewer feedback")
+
+    except Exception as e:
+        log.error(f"run_prd_review_comment failed for prd {prd_id}: {e}")
+        try:
+            prd.prd_generation_phase = None
+            db.commit()
+        except Exception:
+            pass
+    finally:
+        db.close()
+
+
+def run_prd_approved(prd_id: str):
+    """Called when reviewer approves the PRD."""
+    db = SessionLocal()
+    try:
+        prd = db.query(models.PrdDocument).filter(models.PrdDocument.id == prd_id).first()
+        if not prd or prd.status == "Approved":
+            return
+        note = db.query(models.MeetingNote).filter(models.MeetingNote.id == prd.note_id).first()
+        creator = db.query(models.User).filter(models.User.id == note.creator_id).first() if note else None
+        cfg = cfg_for_user(creator)
+
+        prd.status = "Approved"
+        db.commit()
+
+        if prd.github_project_item_id:
+            try:
+                gh.update_project_status(prd.github_project_item_id, "Done", cfg=cfg)
+            except Exception as e:
+                log.warning(f"PRD board status update failed: {e}")
+
+        if prd.github_issue_number:
+            try:
+                reviewer = prd.reviewer_name or prd.reviewer_github_username or "the reviewer"
+                gh.add_comment(
+                    prd.github_issue_number,
+                    f"✅ PRD approved by {reviewer}!\n\n"
+                    f"The PRD is ready to be sent to the Planner.",
+                    cfg=cfg,
+                )
+            except Exception as e:
+                log.warning(f"PRD approval comment failed: {e}")
+
+        log.info(f"PRD {prd_id} approved")
+
+    except Exception as e:
+        log.error(f"run_prd_approved failed for prd {prd_id}: {e}")
     finally:
         db.close()
 
