@@ -423,6 +423,23 @@ def _poll_github():
         ]
 
         for note in brd_notes:
+            # Recovery path: if all reviewers are already Approved in the JSON
+            # but note.status never flipped (e.g. thread was killed on restart),
+            # trigger approval immediately without waiting for a new comment.
+            if note.reviewers:
+                all_already_approved = all(
+                    r.get("status") == "Approved" for r in note.reviewers
+                )
+                if all_already_approved and note.status != "Approved":
+                    log.info(
+                        f"Recovery: all reviewers Approved in DB but status={note.status} "
+                        f"for note {note.id} — triggering run_brd_approved"
+                    )
+                    threading.Thread(
+                        target=run_brd_approved, args=(note.id,), daemon=True
+                    ).start()
+                    continue
+
             _check_brd_reviewer_comments(db, note)
             _check_brd_done_status(db, note)
 
@@ -643,12 +660,15 @@ def _check_brd_reviewer_comments(db: Session, note: models.MeetingNote):
 
 def _check_brd_done_status(db: Session, note: models.MeetingNote):
     if not note.github_project_item_id:
+        log.debug(f"BRD done check skipped (no project_item_id) for note {note.id}")
         return
     try:
         creator = db.query(models.User).filter(models.User.id == note.creator_id).first()
         cfg = cfg_for_user(creator)
         current_status = gh.get_project_item_status(note.github_project_item_id, cfg=cfg)
+        log.info(f"BRD board status for note {note.id}: '{current_status}' (note.status='{note.status}')")
         if current_status and current_status.lower() == "done" and note.status != "Approved":
+            log.info(f"BRD board moved to Done — triggering approval for note {note.id}")
             threading.Thread(target=run_brd_approved, args=(note.id,), daemon=True).start()
     except Exception as e:
         log.error(f"BRD done check failed for note {note.id}: {e}")
