@@ -29,6 +29,18 @@ _APPROVAL_KEYWORDS = {
     "accepted", "well done", "great job", "perfect",
 }
 
+# Keywords that confirm a pending BRD change proposal (case-insensitive)
+_CONFIRM_CHANGE_KEYWORDS = {
+    "confirm changes", "apply changes", "apply update", "confirm update",
+    "yes apply", "yes, apply", "proceed with changes", "go ahead and update",
+    "confirm", "apply",
+}
+
+
+def _is_confirm_change(text: str) -> bool:
+    t = text.lower().strip()
+    return any(k in t for k in _CONFIRM_CHANGE_KEYWORDS)
+
 
 def _is_approval(comment_body: str) -> bool:
     text = comment_body.lower().strip()
@@ -608,18 +620,36 @@ def _check_brd_reviewer_comments(db: Session, note: models.MeetingNote):
         if not new_comments:
             return
 
-        approval = [c for c in new_comments if _is_approval(c["body"])]
-        feedback = [c for c in new_comments if not _is_approval(c["body"])]
+        # ── Classify new comments into four buckets ───────────────────────────
+        # Priority order: confirm_change > approval > question > change_request
+        confirmations  = [c for c in new_comments if _is_confirm_change(c["body"])]
+        approvals      = [c for c in new_comments if not _is_confirm_change(c["body"]) and _is_approval(c["body"])]
+        other_comments = [c for c in new_comments if not _is_confirm_change(c["body"]) and not _is_approval(c["body"])]
 
+        # Mark all new comments as processed up-front so re-polls don't re-process them
         processed_list = list(note.processed_comment_ids or [])
         processed_list.extend(str(c["id"]) for c in new_comments)
         note.processed_comment_ids = processed_list
         flag_modified(note, "processed_comment_ids")
         db.commit()
 
-        if approval:
-            # Mark each approving reviewer as Approved in the reviewers list
-            approvers = {c["user"]["login"].lower() for c in approval}
+        # ── Handle CONFIRM CHANGES ────────────────────────────────────────────
+        if confirmations and note.pending_brd_changes:
+            pending = note.pending_brd_changes
+            log.info(f"Reviewer confirmed pending BRD changes for note {note.id}")
+            note.pending_brd_changes = None
+            flag_modified(note, "pending_brd_changes")
+            db.commit()
+            threading.Thread(
+                target=run_brd_review_comment,
+                args=(note.id, [pending["feedback"]], []),
+                daemon=True,
+            ).start()
+            return  # one action per poll cycle
+
+        # ── Handle APPROVED ───────────────────────────────────────────────────
+        if approvals:
+            approvers = {c["user"]["login"].lower() for c in approvals}
             reviewers = list(note.reviewers or [])
             for r in reviewers:
                 if r["github_username"].lower() in approvers:
@@ -632,25 +662,44 @@ def _check_brd_reviewer_comments(db: Session, note: models.MeetingNote):
             if all_approved:
                 threading.Thread(target=run_brd_approved, args=(note.id,), daemon=True).start()
             else:
-                # Some still pending — post a partial approval note on GitHub
-                pending = [r["github_username"] for r in reviewers if r["status"] != "Approved"]
+                pending_reviewers = [r["github_username"] for r in reviewers if r["status"] != "Approved"]
                 try:
-                    approver_names = ", ".join(f"@{c['user']['login']}" for c in approval)
+                    approver_names = ", ".join(f"@{c['user']['login']}" for c in approvals)
                     gh.add_comment(
                         note.github_issue_number,
                         f"✅ {approver_names} approved the BRD.\n\n"
-                        f"Still waiting for approval from: {', '.join('@' + u for u in pending)}",
+                        f"Still waiting for approval from: {', '.join('@' + u for u in pending_reviewers)}",
                         cfg=cfg,
                     )
                 except Exception as e:
                     log.warning(f"Failed to post partial approval comment: {e}")
 
-        if feedback:
-            comment_texts = [c["body"] for c in feedback]
-            comment_ids = [c["id"] for c in feedback]
+        # ── Handle questions and change requests ──────────────────────────────
+        questions = []
+        change_requests = []
+        for c in other_comments:
+            comment_type = agent.classify_brd_comment(c["body"])
+            log.info(f"BRD comment classified as '{comment_type}' for note {note.id}")
+            if comment_type == "question":
+                questions.append(c)
+            else:
+                change_requests.append(c)
+
+        # Answer each question independently (no BRD modification)
+        for q in questions:
             threading.Thread(
-                target=run_brd_review_comment,
-                args=(note.id, comment_texts, comment_ids),
+                target=run_brd_answer_question,
+                args=(note.id, q["body"], q["id"]),
+                daemon=True,
+            ).start()
+
+        # Combine all change requests into a single proposal
+        if change_requests:
+            combined_feedback = "\n\n".join(c["body"] for c in change_requests)
+            comment_ids = [c["id"] for c in change_requests]
+            threading.Thread(
+                target=run_brd_propose_changes,
+                args=(note.id, combined_feedback, comment_ids),
                 daemon=True,
             ).start()
 
@@ -753,6 +802,73 @@ def run_brd_review_comment(note_id: str, comment_texts: list[str], comment_ids: 
             db.commit()
         except Exception:
             pass
+    finally:
+        db.close()
+
+
+def run_brd_answer_question(note_id: str, question: str, comment_id: int):
+    """Answer a reviewer's question about the BRD as a GitHub comment.
+    The BRD is NOT modified."""
+    db = SessionLocal()
+    try:
+        note = db.query(models.MeetingNote).filter(models.MeetingNote.id == note_id).first()
+        if not note or not note.brd_draft:
+            return
+        creator = db.query(models.User).filter(models.User.id == note.creator_id).first()
+        cfg = cfg_for_user(creator)
+
+        answer = agent.answer_brd_question(question, note.brd_draft)
+        gh.add_comment(
+            note.github_issue_number,
+            f"**Answer to your question:**\n\n{answer}\n\n"
+            f"---\n"
+            f"_The BRD has not been modified. If you'd like changes made, "
+            f"describe them and I'll propose an update for your confirmation._",
+            cfg=cfg,
+        )
+        log.info(f"Answered BRD question for note {note_id} (comment {comment_id})")
+    except Exception as e:
+        log.error(f"run_brd_answer_question failed for note {note_id}: {e}")
+    finally:
+        db.close()
+
+
+def run_brd_propose_changes(note_id: str, feedback: str, comment_ids: list):
+    """Propose BRD changes to the reviewer without applying them.
+    Stores the proposal in pending_brd_changes; the BRD is updated only
+    after the reviewer replies with a CONFIRM CHANGES keyword."""
+    db = SessionLocal()
+    try:
+        note = db.query(models.MeetingNote).filter(models.MeetingNote.id == note_id).first()
+        if not note or not note.brd_draft:
+            return
+        creator = db.query(models.User).filter(models.User.id == note.creator_id).first()
+        cfg = cfg_for_user(creator)
+
+        summary = agent.propose_brd_change_summary(feedback, note.brd_draft)
+
+        # Store pending proposal — applied only on CONFIRM CHANGES
+        note.pending_brd_changes = {
+            "feedback": feedback,
+            "summary": summary,
+            "comment_ids": [str(c) for c in comment_ids],
+        }
+        flag_modified(note, "pending_brd_changes")
+        db.commit()
+
+        reviewer = f"@{note.reviewer_github_username}" if note.reviewer_github_username else "Reviewer"
+        gh.add_comment(
+            note.github_issue_number,
+            f"**Proposed BRD Updates:**\n\n{summary}\n\n"
+            f"---\n"
+            f"{reviewer} — Reply **`CONFIRM CHANGES`** to apply these updates to the BRD, "
+            f"or provide additional feedback to refine them.\n\n"
+            f"_The BRD has not been modified yet._",
+            cfg=cfg,
+        )
+        log.info(f"Proposed BRD changes for note {note_id}, awaiting confirmation")
+    except Exception as e:
+        log.error(f"run_brd_propose_changes failed for note {note_id}: {e}")
     finally:
         db.close()
 

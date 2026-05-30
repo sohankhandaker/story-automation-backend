@@ -117,6 +117,7 @@ class MeetingNote(Base):
     reviewers = Column(JSON, default=list)  # [{github_username, name, status}]
     github_last_checked_at = Column(DateTime, nullable=True)
     processed_comment_ids = Column(JSON, default=list)
+    pending_brd_changes = Column(JSON, nullable=True)  # {feedback, summary, comment_id} — awaiting CONFIRM CHANGES
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

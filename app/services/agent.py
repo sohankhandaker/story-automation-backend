@@ -1205,3 +1205,66 @@ def build_full_story(phases: list[dict]) -> str:
         if p.get("completed"):
             parts.append(f"## {p['name']}\n\n{p['content']}")
     return "\n\n---\n\n".join(parts)
+
+
+# ── BRD Q&A and smart comment classification ──────────────────────────────────
+
+def classify_brd_comment(comment: str) -> str:
+    """Classify a reviewer comment as 'question' or 'change_request'.
+
+    Uses a fast single-token call — the model replies with exactly one word.
+    Falls back to 'change_request' when the classification is ambiguous,
+    because treating a change request as a question is less disruptive than
+    silently ignoring a change request.
+    """
+    prompt = f"""You are classifying a reviewer comment on a Business Requirements Document.
+
+Comment: "{comment}"
+
+Reply with EXACTLY ONE word, nothing else:
+- "question"       — if the reviewer is asking for clarification or more information
+- "change_request" — if the reviewer wants to modify, add, or remove BRD content"""
+
+    try:
+        result = _chat(prompt, max_tokens=8).strip().lower().split()[0]
+        return result if result in ("question", "change_request") else "change_request"
+    except Exception:
+        return "change_request"
+
+
+def answer_brd_question(question: str, brd_content: str) -> str:
+    """Answer a reviewer's question about the BRD without modifying it."""
+    prompt = f"""You are the senior business analyst who wrote this BRD.
+A reviewer has asked a question — answer it clearly using the BRD content.
+If the answer is not covered in the BRD, say so and suggest what information would be needed.
+
+BRD:
+{brd_content[:8000]}
+
+Reviewer's question: {question}
+
+Provide a clear, concise answer (2-5 sentences). Do NOT propose changes."""
+
+    return _chat(prompt, max_tokens=600)
+
+
+def propose_brd_change_summary(feedback: str, brd_content: str) -> str:
+    """Summarise what BRD sections would change, without generating the full update.
+
+    Returns a bullet-point proposal that is posted to GitHub for reviewer
+    confirmation before the actual update is applied.
+    """
+    prompt = f"""A reviewer has requested changes to a BRD. Summarise what would be updated.
+
+BRD (first 4000 chars):
+{brd_content[:4000]}
+
+Requested changes: {feedback}
+
+Write 2-4 bullet points describing:
+- Which section(s) would be affected (use the exact heading from the BRD)
+- What specifically would be added, removed, or changed
+
+Be precise and specific. Do NOT write the actual updated BRD content."""
+
+    return _chat(prompt, max_tokens=400)

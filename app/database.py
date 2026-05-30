@@ -45,6 +45,8 @@ def _migrate():
         ("meeting_notes", "processed_comment_ids", "JSON"),
         # prd_documents new columns
         ("prd_documents", "reviewers", "JSON"),
+        # BRD Q&A: pending change proposals awaiting reviewer confirmation
+        ("meeting_notes", "pending_brd_changes", "JSON"),
     ]
     is_sqlite = settings.database_url.startswith("sqlite")
     with engine.connect() as conn:
