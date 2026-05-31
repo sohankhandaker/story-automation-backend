@@ -593,6 +593,13 @@ def enhance_notes_to_brd(
 
     for phase_num, phase_name in BRD_PHASES:
         log.info(f"BRD phase {phase_num}/{total}: {phase_name}")
+        # Update phase BEFORE the API call so the app shows the correct step
+        # immediately — even during retry waits the UI reflects the right phase.
+        if phase_callback:
+            try:
+                phase_callback(phase_num, total)
+            except Exception:
+                pass
         try:
             prompt = _brd_phase_prompt(phase_num, phase_name, raw_notes, wiki_content, accumulated, analysis)
             content = _chat(prompt, max_tokens=5000)
@@ -601,12 +608,6 @@ def enhance_notes_to_brd(
         except Exception as e:
             log.error(f"BRD phase {phase_num} failed: {e}")
             sections.append(f"\n\n> ⚠️ Section generation failed for Phase {phase_num}: {e}\n\n")
-
-        if phase_callback:
-            try:
-                phase_callback(phase_num, total)
-            except Exception:
-                pass
 
     brd = "\n\n".join(sections)
 
@@ -1130,6 +1131,12 @@ def generate_prd_from_brd(brd_content: str, phase_callback=None) -> dict:
 
     for phase_num, phase_name in PRD_PHASES:
         log.info(f"PRD phase {phase_num}/{total}: {phase_name}")
+        # Update phase BEFORE the API call — same fix as BRD.
+        if phase_callback:
+            try:
+                phase_callback(phase_num, total)
+            except Exception:
+                pass
         try:
             prompt = _prd_phase_prompt(phase_num, phase_name, brd_content, accumulated)
             content = _chat(prompt, max_tokens=4000)
@@ -1138,12 +1145,6 @@ def generate_prd_from_brd(brd_content: str, phase_callback=None) -> dict:
         except Exception as e:
             log.error(f"PRD phase {phase_num} failed: {e}")
             sections.append(f"\n\n> Section generation failed for Phase {phase_num}: {e}\n\n")
-
-        if phase_callback:
-            try:
-                phase_callback(phase_num, total)
-            except Exception:
-                pass
 
     full_prd = "\n\n".join(sections)
     return {"phases": sections, "full_prd": full_prd}
