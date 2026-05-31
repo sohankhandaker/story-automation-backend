@@ -49,6 +49,11 @@ def _migrate():
         ("meeting_notes", "pending_brd_changes", "JSON"),
         # PRD Q&A: same pattern as BRD
         ("prd_documents", "pending_prd_changes", "JSON"),
+        # GitHub file hosting for direct .md downloads
+        ("meeting_notes", "github_file_url", "VARCHAR"),
+        ("meeting_notes", "github_file_raw_url", "VARCHAR"),
+        ("prd_documents", "github_file_url", "VARCHAR"),
+        ("prd_documents", "github_file_raw_url", "VARCHAR"),
     ]
     is_sqlite = settings.database_url.startswith("sqlite")
     with engine.connect() as conn:

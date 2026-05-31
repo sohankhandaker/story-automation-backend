@@ -287,3 +287,50 @@ def get_project_item_status(item_id: str, cfg: Optional[GHConfig] = None) -> Opt
     except Exception as e:
         log.error(f"Error fetching project item status: {e}")
     return None
+
+
+def push_file(path: str, content: str, commit_message: str,
+              cfg: Optional[GHConfig] = None) -> dict:
+    """Create or update a file in the repository via the Contents API.
+
+    Returns a dict with keys:
+      - html_url: GitHub file page URL
+      - raw_url:  raw.githubusercontent.com download URL
+      - sha:      blob SHA (needed for future updates)
+    """
+    import base64
+    cfg = cfg or _env_cfg()
+    encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
+    url = f"{REST_BASE}/repos/{cfg.owner}/{cfg.repo}/contents/{path}"
+
+    # Check if file already exists so we can pass its SHA for an update
+    sha = None
+    try:
+        with httpx.Client(timeout=20) as client:
+            r = client.get(url, headers=_headers(cfg))
+            if r.status_code == 200:
+                sha = r.json().get("sha")
+    except Exception:
+        pass
+
+    body: dict = {"message": commit_message, "content": encoded}
+    if sha:
+        body["sha"] = sha
+
+    with httpx.Client(timeout=30) as client:
+        resp = client.put(url, json=body, headers=_headers(cfg))
+        resp.raise_for_status()
+        data = resp.json()
+
+    file_data = data.get("content", {})
+    html_url = file_data.get("html_url", "")
+    # Build raw URL from html_url: replace github.com/…/blob/… with raw.githubusercontent.com/…
+    raw_url = html_url.replace(
+        "https://github.com", "https://raw.githubusercontent.com"
+    ).replace("/blob/", "/")
+
+    return {
+        "html_url": html_url,
+        "raw_url": raw_url,
+        "sha": file_data.get("sha", ""),
+    }

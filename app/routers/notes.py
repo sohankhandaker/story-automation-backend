@@ -170,6 +170,24 @@ def _full_brd_pipeline(note_id: str):
             except Exception as e:
                 log.warning(f"GitHub BRD publish failed: {e}")
 
+        # Push .md file to repo for direct download
+        import re
+        safe_title = re.sub(r'[^\w\s\-]', '', note.title or 'BRD').strip().replace(' ', '_')
+        file_path = f"brd/{safe_title}_{note.id[:8]}.md"
+        try:
+            file_info = gh.push_file(
+                path=file_path,
+                content=result["brd_markdown"],
+                commit_message=f"docs(brd): add BRD for {note.title or note.id[:8]}",
+                cfg=cfg,
+            )
+            note.github_file_url = file_info["html_url"]
+            note.github_file_raw_url = file_info["raw_url"]
+            db.commit()
+            log.info(f"BRD .md pushed to repo: {file_info['html_url']}")
+        except Exception as e:
+            log.warning(f"BRD file push failed: {e}")
+
     except Exception as e:
         log.error(f"BRD pipeline failed for note {note_id}: {e}")
         try:

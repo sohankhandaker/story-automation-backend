@@ -147,6 +147,8 @@ class MeetingNoteResponse(BaseModel):
     reviewer_github_username: Optional[str] = None
     reviewer_name: Optional[str] = None
     reviewers: List[Any] = []
+    github_file_url: Optional[str] = None
+    github_file_raw_url: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
@@ -239,6 +241,8 @@ class PrdResponse(BaseModel):
     reviewer_github_username: Optional[str] = None
     reviewer_name: Optional[str] = None
     reviewers: List[Any] = []
+    github_file_url: Optional[str] = None
+    github_file_raw_url: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 

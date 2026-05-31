@@ -112,6 +112,25 @@ def _full_prd_pipeline(prd_id: str):
             except Exception as e:
                 log.warning(f"GitHub PRD publish failed: {e}")
 
+        # Push .md file to repo for direct download
+        import re
+        title = note.title if note else None
+        safe_title = re.sub(r'[^\w\s\-]', '', title or 'PRD').strip().replace(' ', '_')
+        file_path = f"prd/{safe_title}_{prd.id[:8]}.md"
+        try:
+            file_info = gh.push_file(
+                path=file_path,
+                content=result["full_prd"],
+                commit_message=f"docs(prd): add PRD for {title or prd.id[:8]}",
+                cfg=cfg,
+            )
+            prd.github_file_url = file_info["html_url"]
+            prd.github_file_raw_url = file_info["raw_url"]
+            db.commit()
+            log.info(f"PRD .md pushed to repo: {file_info['html_url']}")
+        except Exception as e:
+            log.warning(f"PRD file push failed: {e}")
+
     except Exception as e:
         log.error(f"PRD pipeline failed for prd_id={prd_id}: {e}")
         try:
