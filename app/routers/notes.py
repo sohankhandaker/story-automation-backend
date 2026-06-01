@@ -171,7 +171,6 @@ def _full_brd_pipeline(note_id: str):
                 log.warning(f"GitHub BRD publish failed: {e}")
 
         # Push .md file to repo for direct download
-        import re
         safe_title = re.sub(r'[^\w\s\-]', '', note.title or 'BRD').strip().replace(' ', '_')
         file_path = f"brd/{safe_title}_{note.id[:8]}.md"
         try:
