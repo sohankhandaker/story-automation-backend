@@ -16,6 +16,7 @@ from ..services import github as gh
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/notes", tags=["notes"])
+projects_notes_router = APIRouter(prefix="/api/projects", tags=["notes"])
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -37,10 +38,18 @@ def _combined_notes(note: models.MeetingNote) -> str:
     return "\n\n---\n\n".join(parts)
 
 
-def _build_brd_issue_body(note: models.MeetingNote, brd_markdown: str) -> str:
+def _get_project_issue_number(note: models.MeetingNote, db: Session) -> int | None:
+    """Return the GitHub issue number from the note's project, if any."""
+    if not note.project_id:
+        return note.github_issue_number
+    project = db.query(models.Project).filter(models.Project.id == note.project_id).first()
+    return project.github_issue_number if project else None
+
+
+def _build_brd_comment(note: models.MeetingNote, brd_markdown: str) -> str:
+    title = note.title or "BRD"
     header = (
-        f"# {note.title}\n\n"
-        f"**BRD Document** — v{note.current_version_number}\n\n"
+        f"## BRD: {title} — v{note.current_version_number}\n\n"
         f"---\n\n"
     )
     body = header + brd_markdown
@@ -57,7 +66,7 @@ def _full_brd_pipeline(note_id: str):
       Phase 1 — crawl all URLs in notes + wiki_url
       Phase 2 — AI analysis of all notes
       Phases 3-9 — 7-phase BRD generation using analysis as context
-    Sets status to "Pending Review" when done.
+    Posts progress and result as comments on the project's GitHub issue.
     """
     from ..database import SessionLocal
     db = SessionLocal()
@@ -70,6 +79,7 @@ def _full_brd_pipeline(note_id: str):
         creator = db.query(models.User).filter(models.User.id == note.creator_id).first()
         cfg = cfg_for_user(creator)
 
+        issue_number = _get_project_issue_number(note, db)
         combined = _combined_notes(note)
 
         # Phase 1: Crawl URLs
@@ -101,19 +111,19 @@ def _full_brd_pipeline(note_id: str):
 
         analysis = agent.analyze_notes_to_draft(combined, crawled_content)
 
-        # Update GitHub issue with analysis so the ticket has meaningful content immediately
-        if note.github_issue_number:
+        # Post analysis as a comment so BU can see early progress
+        if issue_number:
             try:
-                analysis_body = (
-                    f"# BRD In Progress\n\n"
+                analysis_comment = (
+                    f"### BRD In Progress — Notes Analysis\n\n"
                     f"*Generating full BRD — estimated 1–2 minutes…*\n\n"
-                    f"---\n\n## Notes Analysis\n\n{analysis}"
+                    f"---\n\n{analysis}"
                 )
-                if len(analysis_body) > 60000:
-                    analysis_body = analysis_body[:60000] + "\n\n_(truncated)_"
-                gh.update_issue_body(note.github_issue_number, analysis_body, cfg=cfg)
+                if len(analysis_comment) > 60000:
+                    analysis_comment = analysis_comment[:60000] + "\n\n_(truncated)_"
+                gh.add_comment(issue_number, analysis_comment, cfg=cfg)
             except Exception as e:
-                log.warning(f"GitHub analysis update failed: {e}")
+                log.warning(f"GitHub analysis comment failed: {e}")
 
         # Extract tentative title from analysis
         for line in analysis.splitlines():
@@ -152,23 +162,21 @@ def _full_brd_pipeline(note_id: str):
         note.status = "Pending Review"
         db.commit()
 
-        # Update GitHub issue with full BRD
-        if note.github_issue_number:
+        # Post full BRD as a comment on the project's GitHub issue
+        if issue_number:
             try:
-                gh.update_issue_body(
-                    note.github_issue_number,
-                    _build_brd_issue_body(note, result["brd_markdown"]),
+                gh.add_comment(
+                    issue_number,
+                    _build_brd_comment(note, result["brd_markdown"]),
                     cfg=cfg,
                 )
                 gh.add_comment(
-                    note.github_issue_number,
-                    "✅ BRD generation complete!\n\n"
-                    "The full Business Requirements Document is now in the issue description above.\n\n"
-                    "The creator will assign a reviewer shortly.",
+                    issue_number,
+                    "BRD generation complete!\n\nThe full Business Requirements Document is in the comment above.\n\nThe creator will assign a reviewer shortly.",
                     cfg=cfg,
                 )
             except Exception as e:
-                log.warning(f"GitHub BRD publish failed: {e}")
+                log.warning(f"GitHub BRD comment failed: {e}")
 
         # Push .md file to repo for direct download
         safe_title = re.sub(r'[^\w\s\-]', '', note.title or 'BRD').strip().replace(' ', '_')
@@ -192,7 +200,7 @@ def _full_brd_pipeline(note_id: str):
         try:
             if note:
                 note.brd_generation_phase = None
-                note.status = "Draft"  # allow user to retry
+                note.status = "Draft"
                 db.commit()
         except Exception:
             pass
@@ -229,32 +237,29 @@ def _update_brd(note_id: str, feedback: str):
         note.current_version_number = next_ver
         note.brd_generation_phase = None
 
-        if note.github_issue_number:
+        issue_number = _get_project_issue_number(note, db)
+        if issue_number:
             try:
                 creator = db.query(models.User).filter(
                     models.User.id == note.creator_id
                 ).first()
                 cfg = cfg_for_user(creator)
-                gh.update_issue_body(
-                    note.github_issue_number,
-                    _build_brd_issue_body(note, result["updated_markdown"]),
-                    cfg=cfg,
-                )
+
+                sections_line = ", ".join(result["changed_sections"]) if result["changed_sections"] else "General updates"
                 reviewer = f"@{note.reviewer_github_username}" if note.reviewer_github_username else "Reviewer"
-                from ..services.engine import _build_brd_update_comment
-                gh.add_comment(
-                    note.github_issue_number,
-                    _build_brd_update_comment(
-                        version=next_ver,
-                        change_summary=result["change_summary"],
-                        changed_sections=result["changed_sections"],
-                        updated_markdown=result["updated_markdown"],
-                        reviewer_mention=reviewer,
-                    ),
-                    cfg=cfg,
+                update_comment = (
+                    f"## BRD Updated (v{next_ver})\n\n"
+                    f"**Changes:** {result['change_summary']}\n\n"
+                    f"**Sections updated:** {sections_line}\n\n"
+                    f"---\n\n"
+                    f"{_build_brd_comment(note, result['updated_markdown'])}\n\n"
+                    f"---\n\n"
+                    f"{reviewer} — please review the updated BRD above. "
+                    f"Reply **`APPROVED`** to approve, or leave further feedback."
                 )
+                gh.add_comment(issue_number, update_comment, cfg=cfg)
             except Exception as e:
-                log.warning(f"GitHub update failed after BRD feedback: {e}")
+                log.warning(f"GitHub update comment failed after BRD feedback: {e}")
 
         note.status = "In Review"
         db.commit()
@@ -270,6 +275,70 @@ def _update_brd(note_id: str, feedback: str):
         db.close()
 
 
+# ── Project-scoped note routes ─────────────────────────────────────────────────
+
+@projects_notes_router.post("/{project_id}/notes", response_model=schemas.MeetingNoteResponse, status_code=201)
+def create_note_for_project(
+    project_id: str,
+    body: schemas.NotesEnhanceRequest,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    project = db.query(models.Project).filter(
+        models.Project.id == project_id,
+        models.Project.creator_id == current_user.id,
+    ).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    note = models.MeetingNote(
+        creator_id=current_user.id,
+        project_id=project_id,
+        raw_notes=body.raw_notes,
+        wiki_url=body.wiki_url or None,
+        title="New Note",
+        status="Draft",
+        # Link to the project's GitHub issue so all BRD work posts there
+        github_issue_url=project.github_issue_url,
+        github_issue_number=project.github_issue_number,
+        github_issue_node_id=project.github_issue_node_id,
+        github_project_item_id=project.github_project_item_id,
+    )
+    db.add(note)
+    db.flush()
+
+    entry = models.NoteEntry(note_id=note.id, content=body.raw_notes)
+    db.add(entry)
+    db.commit()
+    db.refresh(note)
+    return note
+
+
+@projects_notes_router.get("/{project_id}/notes", response_model=schemas.MeetingNotesListResponse)
+def list_notes_for_project(
+    project_id: str,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    project = db.query(models.Project).filter(
+        models.Project.id == project_id,
+        models.Project.creator_id == current_user.id,
+    ).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    notes = (
+        db.query(models.MeetingNote)
+        .filter(
+            models.MeetingNote.project_id == project_id,
+            models.MeetingNote.creator_id == current_user.id,
+        )
+        .order_by(models.MeetingNote.created_at.desc())
+        .all()
+    )
+    return {"notes": notes, "total": len(notes)}
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @router.post("", response_model=schemas.MeetingNoteResponse, status_code=201)
@@ -278,9 +347,10 @@ def create_note(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    """Save the first note entry. No BRD generation — that happens on Mark as Ready."""
+    """Save the first note entry (standalone, no project). No BRD generation — that happens on Mark as Ready."""
     note = models.MeetingNote(
         creator_id=current_user.id,
+        project_id=body.project_id or None,
         raw_notes=body.raw_notes,
         wiki_url=body.wiki_url or None,
         title="New Note",
@@ -406,8 +476,9 @@ def mark_ready(
     current_user: models.User = Depends(get_current_user),
 ):
     """
-    Create GitHub ticket, move board to In Progress, fire the full BRD pipeline.
-    No reviewer assignment here — that happens after BRD is generated.
+    Move note to In Progress and fire the full BRD pipeline.
+    If the note belongs to a project, all GitHub activity goes on the project's issue.
+    Otherwise creates a standalone issue (legacy behaviour).
     """
     note = db.query(models.MeetingNote).filter(
         models.MeetingNote.id == note_id,
@@ -420,19 +491,54 @@ def mark_ready(
 
     cfg = cfg_for_user(current_user)
 
-    preview = note.raw_notes[:60] + ("…" if len(note.raw_notes) > 60 else "")
-    issue = gh.create_issue(
-        title=f"BRD: {preview}",
-        body="🔄 Analyzing meeting notes and generating BRD…\n\nThis will be updated automatically.",
-        cfg=cfg,
-    )
-    item_id = gh.add_to_project(issue["node_id"], cfg=cfg)
-    gh.update_project_status(item_id, "In Progress", cfg=cfg)
+    if note.project_id:
+        # Project-linked note: use the project's existing GitHub issue
+        project = db.query(models.Project).filter(
+            models.Project.id == note.project_id
+        ).first()
+        if project and project.github_issue_number:
+            # Move project board card to In Progress
+            if project.github_project_item_id:
+                try:
+                    gh.update_project_status(project.github_project_item_id, "In Progress", cfg=cfg)
+                except Exception as e:
+                    log.warning(f"Board status update failed: {e}")
 
-    note.github_issue_url = issue["url"]
-    note.github_issue_number = issue["number"]
-    note.github_issue_node_id = issue["node_id"]
-    note.github_project_item_id = item_id
+            # Post a comment so the BU team sees work starting
+            preview = note.raw_notes[:80] + ("…" if len(note.raw_notes) > 80 else "")
+            try:
+                gh.add_comment(
+                    project.github_issue_number,
+                    f"### BRD Generation Started\n\n"
+                    f"Analysing notes and generating Business Requirements Document…\n\n"
+                    f"> {preview}",
+                    cfg=cfg,
+                )
+            except Exception as e:
+                log.warning(f"GitHub start comment failed: {e}")
+
+            note.github_issue_url = project.github_issue_url
+            note.github_issue_number = project.github_issue_number
+            note.github_issue_node_id = project.github_issue_node_id
+            note.github_project_item_id = project.github_project_item_id
+    else:
+        # Legacy standalone note: create its own GitHub issue
+        preview = note.raw_notes[:60] + ("…" if len(note.raw_notes) > 60 else "")
+        try:
+            issue = gh.create_issue(
+                title=f"BRD: {preview}",
+                body="Analysing meeting notes and generating BRD…\n\nThis will be updated automatically.",
+                cfg=cfg,
+            )
+            item_id = gh.add_to_project(issue["node_id"], cfg=cfg)
+            gh.update_project_status(item_id, "In Progress", cfg=cfg)
+            note.github_issue_url = issue["url"]
+            note.github_issue_number = issue["number"]
+            note.github_issue_node_id = issue["node_id"]
+            note.github_project_item_id = item_id
+        except Exception as e:
+            log.warning(f"Standalone GitHub issue creation failed: {e}")
+
     note.status = "In Progress"
     note.brd_generation_phase = 0
     note.github_last_checked_at = datetime.utcnow()
@@ -481,7 +587,6 @@ def assign_reviewer(
         note.reviewers = reviewers
         flag_modified(note, "reviewers")
 
-    # Keep single-reviewer fields pointing to the last assigned (for backward compat)
     note.reviewer_github_username = body.reviewer_github_username
     note.reviewer_name = body.reviewer_name
     note.status = "In Review"
@@ -489,16 +594,18 @@ def assign_reviewer(
     db.refresh(note)
 
     if is_new:
-        try:
-            gh.add_comment(
-                note.github_issue_number,
-                f"👋 @{body.reviewer_github_username} — this BRD has been assigned to you for review.\n\n"
-                f"The full Business Requirements Document is in the issue description above.\n\n"
-                f"> Reply **`APPROVED`** to approve, or leave detailed feedback below and the AI agent will update the BRD automatically.",
-                cfg=cfg,
-            )
-        except Exception as e:
-            log.warning(f"Failed to post assignment comment: {e}")
+        issue_number = _get_project_issue_number(note, db)
+        if issue_number:
+            try:
+                gh.add_comment(
+                    issue_number,
+                    f"@{body.reviewer_github_username} — this BRD has been assigned to you for review.\n\n"
+                    f"The full Business Requirements Document is in the comment above.\n\n"
+                    f"> Reply **`APPROVED`** to approve, or leave detailed feedback below and the AI agent will update the BRD automatically.",
+                    cfg=cfg,
+                )
+            except Exception as e:
+                log.warning(f"Failed to post assignment comment: {e}")
 
     return note
 

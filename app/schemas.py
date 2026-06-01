@@ -52,6 +52,35 @@ class SettingsUpdate(BaseModel):
     gh_token: Optional[str] = None
 
 
+# ── Project ───────────────────────────────────────────────────────────────────
+
+class ProjectCreate(BaseModel):
+    title: str
+    client_name: str
+    short_description: Optional[str] = None
+
+
+class ProjectResponse(BaseModel):
+    id: str
+    title: str
+    client_name: str
+    short_description: Optional[str] = None
+    github_issue_url: Optional[str] = None
+    github_issue_number: Optional[int] = None
+    status: str = "Active"
+    notes_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class ProjectListResponse(BaseModel):
+    projects: List[ProjectResponse]
+    total: int
+
+
 # ── Task ──────────────────────────────────────────────────────────────────────
 
 class StoryPhase(BaseModel):
@@ -125,6 +154,7 @@ class ChatResponse(BaseModel):
 class NotesEnhanceRequest(BaseModel):
     raw_notes: str
     wiki_url: Optional[str] = None
+    project_id: Optional[str] = None
 
 
 class ReviewerStatusItem(BaseModel):
@@ -135,6 +165,7 @@ class ReviewerStatusItem(BaseModel):
 
 class MeetingNoteResponse(BaseModel):
     id: str
+    project_id: Optional[str] = None
     title: Optional[str]
     raw_notes: str
     wiki_url: Optional[str]

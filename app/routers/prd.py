@@ -1,3 +1,4 @@
+import re
 import logging
 from datetime import datetime
 from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException
@@ -16,11 +17,19 @@ router = APIRouter(prefix="/api/notes", tags=["prd"])
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _build_prd_issue_body(note: models.MeetingNote, prd_markdown: str) -> str:
+def _get_project_issue_number(note: models.MeetingNote, db: Session) -> int | None:
+    """Return the GitHub issue number from the note's project, if any."""
+    if note.project_id:
+        project = db.query(models.Project).filter(models.Project.id == note.project_id).first()
+        if project:
+            return project.github_issue_number
+    return note.github_issue_number
+
+
+def _build_prd_comment(note: models.MeetingNote, prd: models.PrdDocument, prd_markdown: str) -> str:
     title = note.title or "PRD"
     header = (
-        f"# PRD: {title}\n\n"
-        f"**Product Requirements Document** — v{note.prd.current_version_number if note.prd else 1}\n\n"
+        f"## PRD: {title} — v{prd.current_version_number}\n\n"
         f"---\n\n"
     )
     body = header + prd_markdown
@@ -36,22 +45,22 @@ def _build_prd_update_comment(
     reviewer_mention: str,
 ) -> str:
     sections_line = ", ".join(changed_sections) if changed_sections else "General updates"
-    body = (
+    return (
         f"## PRD Updated (v{version})\n\n"
         f"**Changes:** {change_summary}\n\n"
         f"**Sections updated:** {sections_line}\n\n"
         f"---\n\n"
-        f"The full updated PRD is in the issue description above.\n\n"
+        f"The full updated PRD is in the comment above.\n\n"
         f"{reviewer_mention} — please review. "
         f"Reply **`APPROVED`** to approve, or leave further feedback."
     )
-    return body
 
 
 # ── Background tasks ──────────────────────────────────────────────────────────
 
 def _full_prd_pipeline(prd_id: str):
-    """Generate the full PRD phase by phase from the approved BRD."""
+    """Generate the full PRD phase by phase from the approved BRD.
+    Posts progress and result as comments on the project's GitHub issue."""
     from ..database import SessionLocal
     db = SessionLocal()
     prd = None
@@ -69,6 +78,7 @@ def _full_prd_pipeline(prd_id: str):
 
         creator = db.query(models.User).filter(models.User.id == note.creator_id).first()
         cfg = cfg_for_user(creator)
+        issue_number = _get_project_issue_number(note, db)
 
         def _phase_cb(phase_num: int, _total: int):
             try:
@@ -94,26 +104,23 @@ def _full_prd_pipeline(prd_id: str):
         prd.status = "Pending Review"
         db.commit()
 
-        # Update GitHub issue with full PRD
-        if prd.github_issue_number:
+        # Post PRD as a comment on the project's GitHub issue
+        if issue_number:
             try:
-                gh.update_issue_body(
-                    prd.github_issue_number,
-                    _build_prd_issue_body(note, result["full_prd"]),
+                gh.add_comment(
+                    issue_number,
+                    _build_prd_comment(note, prd, result["full_prd"]),
                     cfg=cfg,
                 )
                 gh.add_comment(
-                    prd.github_issue_number,
-                    "PRD generation complete!\n\n"
-                    "The full Product Requirements Document is now in the issue description above.\n\n"
-                    "The creator will assign a reviewer shortly.",
+                    issue_number,
+                    "PRD generation complete!\n\nThe full Product Requirements Document is in the comment above.\n\nThe creator will assign a reviewer shortly.",
                     cfg=cfg,
                 )
             except Exception as e:
-                log.warning(f"GitHub PRD publish failed: {e}")
+                log.warning(f"GitHub PRD comment failed: {e}")
 
         # Push .md file to repo for direct download
-        import re
         title = note.title if note else None
         safe_title = re.sub(r'[^\w\s\-]', '', title or 'PRD').strip().replace(' ', '_')
         file_path = f"prd/{safe_title}_{prd.id[:8]}.md"
@@ -157,6 +164,7 @@ def _update_prd(prd_id: str, feedback: str):
         note = db.query(models.MeetingNote).filter(models.MeetingNote.id == prd.note_id).first()
         creator = db.query(models.User).filter(models.User.id == note.creator_id).first() if note else None
         cfg = cfg_for_user(creator)
+        issue_number = _get_project_issue_number(note, db) if note else None
 
         result = agent.update_prd_from_feedback(
             prd_content=prd.prd_draft,
@@ -179,16 +187,12 @@ def _update_prd(prd_id: str, feedback: str):
         prd.prd_generation_phase = None
         prd.status = "Pending Review"
 
-        if prd.github_issue_number and note:
+        if issue_number and note:
             try:
-                gh.update_issue_body(
-                    prd.github_issue_number,
-                    _build_prd_issue_body(note, result["updated_prd"]),
-                    cfg=cfg,
-                )
                 reviewer = f"@{prd.reviewer_github_username}" if prd.reviewer_github_username else "Reviewer"
                 gh.add_comment(
-                    prd.github_issue_number,
+                    issue_number,
+                    _build_prd_comment(note, prd, result["updated_prd"]) + "\n\n---\n\n" +
                     _build_prd_update_comment(
                         version=next_ver,
                         change_summary=result["change_summary"],
@@ -198,7 +202,7 @@ def _update_prd(prd_id: str, feedback: str):
                     cfg=cfg,
                 )
             except Exception as e:
-                log.warning(f"GitHub update failed after PRD feedback: {e}")
+                log.warning(f"GitHub update comment failed after PRD feedback: {e}")
 
         db.commit()
 
@@ -223,10 +227,7 @@ def generate_prd(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    """
-    Start PRD generation from an approved BRD.
-    Creates PrdDocument, creates GitHub issue, fires _full_prd_pipeline in background.
-    """
+    """Start PRD generation from an approved BRD. All output posted as comments on the project's issue."""
     note = db.query(models.MeetingNote).filter(
         models.MeetingNote.id == note_id,
         models.MeetingNote.creator_id == current_user.id,
@@ -249,26 +250,43 @@ def generate_prd(
         )
 
     cfg = cfg_for_user(current_user)
+    issue_number = _get_project_issue_number(note, db)
 
-    brd_title = note.title or "BRD"
-    issue = gh.create_issue(
-        title=f"PRD: {brd_title}",
-        body="Generating Product Requirements Document from approved BRD...\n\nThis will be updated automatically.",
-        cfg=cfg,
-    )
-    item_id = gh.add_to_project(issue["node_id"], cfg=cfg)
-    gh.update_project_status(item_id, "In Progress", cfg=cfg)
+    # Post a start comment on the project issue
+    if issue_number:
+        try:
+            gh.add_comment(
+                issue_number,
+                f"### PRD Generation Started\n\nGenerating Product Requirements Document from the approved BRD…",
+                cfg=cfg,
+            )
+        except Exception as e:
+            log.warning(f"GitHub PRD start comment failed: {e}")
+
+    # Update project board status
+    item_id = note.github_project_item_id
+    if item_id:
+        try:
+            gh.update_project_status(item_id, "In Progress", cfg=cfg)
+        except Exception as e:
+            log.warning(f"Board status update failed: {e}")
+
+    # Carry the GitHub issue number onto the PRD so the polling engine can
+    # watch for reviewer comments on the same issue.
+    issue_number_for_prd = issue_number
+    issue_node_id = note.github_issue_node_id
+    project_item_id = note.github_project_item_id
+    issue_url = note.github_issue_url
 
     if existing_prd:
-        # Retry from Draft: reuse and reset
         existing_prd.prd_draft = None
         existing_prd.prd_generation_phase = 0
         existing_prd.status = "In Progress"
         existing_prd.current_version_number = 0
-        existing_prd.github_issue_url = issue["url"]
-        existing_prd.github_issue_number = issue["number"]
-        existing_prd.github_issue_node_id = issue["node_id"]
-        existing_prd.github_project_item_id = item_id
+        existing_prd.github_issue_number = issue_number_for_prd
+        existing_prd.github_issue_node_id = issue_node_id
+        existing_prd.github_project_item_id = project_item_id
+        existing_prd.github_issue_url = issue_url
         existing_prd.github_last_checked_at = datetime.utcnow()
         db.commit()
         db.refresh(existing_prd)
@@ -279,10 +297,10 @@ def generate_prd(
         note_id=note_id,
         prd_generation_phase=0,
         status="In Progress",
-        github_issue_url=issue["url"],
-        github_issue_number=issue["number"],
-        github_issue_node_id=issue["node_id"],
-        github_project_item_id=item_id,
+        github_issue_number=issue_number_for_prd,
+        github_issue_node_id=issue_node_id,
+        github_project_item_id=project_item_id,
+        github_issue_url=issue_url,
         github_last_checked_at=datetime.utcnow(),
     )
     db.add(prd)
@@ -366,9 +384,10 @@ def assign_prd_reviewer(
 
     cfg = cfg_for_user(current_user)
 
-    if prd.github_project_item_id:
+    item_id = note.github_project_item_id
+    if item_id:
         try:
-            gh.update_project_status(prd.github_project_item_id, "In Review", cfg=cfg)
+            gh.update_project_status(item_id, "In Review", cfg=cfg)
         except Exception as e:
             log.warning(f"PRD board status update failed: {e}")
 
@@ -392,16 +411,18 @@ def assign_prd_reviewer(
     db.refresh(prd)
 
     if is_new:
-        try:
-            gh.add_comment(
-                prd.github_issue_number,
-                f"@{body.reviewer_github_username} — this PRD has been assigned to you for review.\n\n"
-                f"The full Product Requirements Document is in the issue description above.\n\n"
-                f"> Reply **`APPROVED`** to approve, or leave detailed feedback below and the AI agent will update the PRD automatically.",
-                cfg=cfg,
-            )
-        except Exception as e:
-            log.warning(f"Failed to post PRD assignment comment: {e}")
+        issue_number = _get_project_issue_number(note, db)
+        if issue_number:
+            try:
+                gh.add_comment(
+                    issue_number,
+                    f"@{body.reviewer_github_username} — this PRD has been assigned to you for review.\n\n"
+                    f"The full Product Requirements Document is in the comment above.\n\n"
+                    f"> Reply **`APPROVED`** to approve, or leave detailed feedback below and the AI agent will update the PRD automatically.",
+                    cfg=cfg,
+                )
+            except Exception as e:
+                log.warning(f"Failed to post PRD assignment comment: {e}")
 
     return prd
 
@@ -464,10 +485,11 @@ def send_prd_to_planner(
     db.commit()
     db.refresh(prd)
 
-    if prd.github_issue_number:
+    issue_number = _get_project_issue_number(note, db)
+    if issue_number:
         try:
             gh.add_comment(
-                prd.github_issue_number,
+                issue_number,
                 "PRD approved and sent to Planner Agent.",
                 cfg=cfg,
             )

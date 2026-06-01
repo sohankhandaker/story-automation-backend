@@ -95,11 +95,32 @@ class ReviewCycle(Base):
     task = relationship("Task", back_populates="review_cycles")
 
 
+class Project(Base):
+    __tablename__ = "projects"
+
+    id = Column(String, primary_key=True, default=gen_id)
+    creator_id = Column(String, ForeignKey("users.id"))
+    title = Column(String, nullable=False)
+    client_name = Column(String, nullable=False)
+    short_description = Column(Text, nullable=True)
+    github_issue_url = Column(String, nullable=True)
+    github_issue_number = Column(Integer, nullable=True)
+    github_issue_node_id = Column(String, nullable=True)
+    github_project_item_id = Column(String, nullable=True)
+    status = Column(String, default="Active")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    creator = relationship("User")
+    notes = relationship("MeetingNote", back_populates="project")
+
+
 class MeetingNote(Base):
     __tablename__ = "meeting_notes"
 
     id = Column(String, primary_key=True, default=gen_id)
     creator_id = Column(String, ForeignKey("users.id"))
+    project_id = Column(String, ForeignKey("projects.id"), nullable=True)
     title = Column(String, nullable=True)
     raw_notes = Column(Text, nullable=False)
     wiki_url = Column(String, nullable=True)
@@ -124,6 +145,7 @@ class MeetingNote(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     creator = relationship("User")
+    project = relationship("Project", back_populates="notes")
     versions = relationship("BrdVersion", back_populates="note", order_by="BrdVersion.version_number")
     entries = relationship("NoteEntry", back_populates="note", order_by="NoteEntry.created_at")
     attachments = relationship("NoteAttachment", back_populates="note", order_by="NoteAttachment.created_at")
