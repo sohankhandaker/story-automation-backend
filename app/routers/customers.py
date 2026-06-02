@@ -95,6 +95,35 @@ def update_customer(
     return _customer_response(c, db)
 
 
+@router.get("/{customer_id}/projects", response_model=schemas.ProjectListResponse)
+def list_customer_projects(
+    customer_id: str,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    c = db.query(models.Customer).filter(
+        models.Customer.id == customer_id,
+        models.Customer.creator_id == current_user.id,
+    ).first()
+    if not c:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    from .projects import _project_response
+    projects = (
+        db.query(models.Project)
+        .filter(
+            models.Project.customer_id == customer_id,
+            models.Project.creator_id == current_user.id,
+        )
+        .order_by(models.Project.created_at.desc())
+        .all()
+    )
+    return {
+        "projects": [_project_response(p, db) for p in projects],
+        "total": len(projects),
+    }
+
+
 @router.delete("/{customer_id}", status_code=204)
 def delete_customer(
     customer_id: str,
