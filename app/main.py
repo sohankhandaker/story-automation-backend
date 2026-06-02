@@ -51,12 +51,3 @@ app.include_router(prd.router)
 @app.get("/health")
 def health():
     return {"status": "ok"}
-
-
-@app.post("/api/admin/reset-db")
-def reset_db():
-    from .database import engine, Base
-    from . import models  # noqa: F401 — registers all models
-    Base.metadata.drop_all(bind=engine)
-    Base.metadata.create_all(bind=engine)
-    return {"status": "ok", "message": "Database reset complete"}
