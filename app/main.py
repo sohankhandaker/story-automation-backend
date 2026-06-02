@@ -51,3 +51,14 @@ app.include_router(prd.router)
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.post("/reset-db", include_in_schema=False)
+def reset_db():
+    """
+    Drops and recreates all tables. FOR DEPLOYMENT USE ONLY — remove after use.
+    """
+    from .database import Base, engine, init_db
+    Base.metadata.drop_all(bind=engine)
+    init_db()
+    return {"status": "db reset complete"}
