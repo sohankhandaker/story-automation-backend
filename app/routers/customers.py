@@ -136,5 +136,35 @@ def delete_customer(
     ).first()
     if not c:
         raise HTTPException(status_code=404, detail="Customer not found")
+
+    # Cascade: delete projects → notes → all child records
+    projects = db.query(models.Project).filter(
+        models.Project.customer_id == customer_id
+    ).all()
+    for project in projects:
+        notes = db.query(models.MeetingNote).filter(
+            models.MeetingNote.project_id == project.id
+        ).all()
+        for note in notes:
+            db.query(models.NoteEntry).filter(
+                models.NoteEntry.note_id == note.id
+            ).delete(synchronize_session=False)
+            db.query(models.NoteAttachment).filter(
+                models.NoteAttachment.note_id == note.id
+            ).delete(synchronize_session=False)
+            db.query(models.BrdVersion).filter(
+                models.BrdVersion.note_id == note.id
+            ).delete(synchronize_session=False)
+            prd = db.query(models.PrdDocument).filter(
+                models.PrdDocument.note_id == note.id
+            ).first()
+            if prd:
+                db.query(models.PrdVersion).filter(
+                    models.PrdVersion.prd_id == prd.id
+                ).delete(synchronize_session=False)
+                db.delete(prd)
+            db.delete(note)
+        db.delete(project)
+
     db.delete(c)
     db.commit()
