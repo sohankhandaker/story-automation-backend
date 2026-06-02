@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .database import init_db
 from .services import github as gh
 from .services import engine
-from .routers import auth, tasks, chat, webhooks, notes, prd, projects
+from .routers import auth, tasks, chat, webhooks, notes, prd, projects, customers
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s — %(message)s")
 log = logging.getLogger(__name__)
@@ -38,6 +38,7 @@ app.add_middleware(
 )
 
 app.include_router(auth.router)
+app.include_router(customers.router)
 app.include_router(projects.router)
 app.include_router(tasks.router)
 app.include_router(chat.router)

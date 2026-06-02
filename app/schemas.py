@@ -52,19 +52,50 @@ class SettingsUpdate(BaseModel):
     gh_token: Optional[str] = None
 
 
+# ── Customer ──────────────────────────────────────────────────────────────────
+
+class CustomerCreate(BaseModel):
+    name: str
+    url: Optional[str] = None
+    short_description: Optional[str] = None
+
+
+class CustomerResponse(BaseModel):
+    id: str
+    name: str
+    url: Optional[str] = None
+    short_description: Optional[str] = None
+    projects_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class CustomerListResponse(BaseModel):
+    customers: List[CustomerResponse]
+    total: int
+
+
 # ── Project ───────────────────────────────────────────────────────────────────
 
 class ProjectCreate(BaseModel):
     title: str
     client_name: str
+    url: Optional[str] = None
     short_description: Optional[str] = None
+    customer_id: Optional[str] = None
 
 
 class ProjectResponse(BaseModel):
     id: str
     title: str
     client_name: str
+    url: Optional[str] = None
     short_description: Optional[str] = None
+    customer_id: Optional[str] = None
+    customer: Optional[CustomerResponse] = None
     github_issue_url: Optional[str] = None
     github_issue_number: Optional[int] = None
     status: str = "Active"

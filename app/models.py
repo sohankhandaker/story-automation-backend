@@ -95,13 +95,30 @@ class ReviewCycle(Base):
     task = relationship("Task", back_populates="review_cycles")
 
 
+class Customer(Base):
+    __tablename__ = "customers"
+
+    id = Column(String, primary_key=True, default=gen_id)
+    creator_id = Column(String, ForeignKey("users.id"))
+    name = Column(String, nullable=False)
+    url = Column(String, nullable=True)
+    short_description = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    creator = relationship("User")
+    projects = relationship("Project", back_populates="customer")
+
+
 class Project(Base):
     __tablename__ = "projects"
 
     id = Column(String, primary_key=True, default=gen_id)
     creator_id = Column(String, ForeignKey("users.id"))
+    customer_id = Column(String, ForeignKey("customers.id"), nullable=True)
     title = Column(String, nullable=False)
     client_name = Column(String, nullable=False)
+    url = Column(String, nullable=True)
     short_description = Column(Text, nullable=True)
     github_issue_url = Column(String, nullable=True)
     github_issue_number = Column(Integer, nullable=True)
@@ -112,6 +129,7 @@ class Project(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     creator = relationship("User")
+    customer = relationship("Customer", back_populates="projects")
     notes = relationship("MeetingNote", back_populates="project")
 
 

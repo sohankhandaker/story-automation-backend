@@ -56,6 +56,8 @@ def _migrate():
         ("prd_documents", "github_file_raw_url", "VARCHAR"),
         # Project layer
         ("meeting_notes", "project_id", "VARCHAR"),
+        ("projects", "url", "VARCHAR"),
+        ("projects", "customer_id", "VARCHAR"),
     ]
     is_sqlite = settings.database_url.startswith("sqlite")
     with engine.connect() as conn:

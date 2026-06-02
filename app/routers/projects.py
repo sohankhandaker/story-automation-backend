@@ -45,10 +45,22 @@ def create_project(
         issue = {"url": None, "number": None, "node_id": None}
         item_id = None
 
+    # If customer_id provided, pull client_name from it
+    client_name = body.client_name
+    if body.customer_id:
+        customer = db.query(models.Customer).filter(
+            models.Customer.id == body.customer_id,
+            models.Customer.creator_id == current_user.id,
+        ).first()
+        if customer:
+            client_name = customer.name
+
     project = models.Project(
         creator_id=current_user.id,
+        customer_id=body.customer_id or None,
         title=body.title,
-        client_name=body.client_name,
+        client_name=client_name,
+        url=body.url,
         short_description=body.short_description,
         github_issue_url=issue.get("url"),
         github_issue_number=issue.get("number"),
@@ -94,15 +106,30 @@ def get_project(
     return _project_response(project, db)
 
 
+def _customer_dict(c: models.Customer, db: Session) -> dict:
+    from .customers import _customer_response
+    return _customer_response(c, db)
+
+
 def _project_response(project: models.Project, db: Session) -> dict:
     notes_count = db.query(models.MeetingNote).filter(
         models.MeetingNote.project_id == project.id
     ).count()
+    customer_data = None
+    if project.customer_id:
+        c = db.query(models.Customer).filter(
+            models.Customer.id == project.customer_id
+        ).first()
+        if c:
+            customer_data = _customer_dict(c, db)
     return {
         "id": project.id,
         "title": project.title,
         "client_name": project.client_name,
+        "url": project.url,
         "short_description": project.short_description,
+        "customer_id": project.customer_id,
+        "customer": customer_data,
         "github_issue_url": project.github_issue_url,
         "github_issue_number": project.github_issue_number,
         "status": project.status,

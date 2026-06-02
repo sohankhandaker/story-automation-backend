@@ -82,6 +82,36 @@ def _full_brd_pipeline(note_id: str):
         issue_number = _get_project_issue_number(note, db)
         combined = _combined_notes(note)
 
+        # Build project + customer context block
+        project_context = ""
+        if note.project_id:
+            project = db.query(models.Project).filter(
+                models.Project.id == note.project_id
+            ).first()
+            if project:
+                project_context += (
+                    f"\n\n## Project Context\n"
+                    f"**Project Name:** {project.title}\n"
+                )
+                if project.short_description:
+                    project_context += f"**Project Description:** {project.short_description}\n"
+                if project.url:
+                    project_context += f"**Project URL:** {project.url}\n"
+
+                if project.customer_id:
+                    customer = db.query(models.Customer).filter(
+                        models.Customer.id == project.customer_id
+                    ).first()
+                    if customer:
+                        project_context += (
+                            f"\n## Client / Customer Context\n"
+                            f"**Client Name:** {customer.name}\n"
+                        )
+                        if customer.short_description:
+                            project_context += f"**Client Description:** {customer.short_description}\n"
+                        if customer.url:
+                            project_context += f"**Client Website:** {customer.url}\n"
+
         # Phase 1: Crawl URLs
         note.brd_generation_phase = 1
         db.commit()
@@ -96,14 +126,30 @@ def _full_brd_pipeline(note_id: str):
             if u not in urls_to_crawl:
                 urls_to_crawl.append(u)
 
+        # Also crawl the customer's website if available
+        if note.project_id:
+            _proj = db.query(models.Project).filter(
+                models.Project.id == note.project_id
+            ).first()
+            if _proj and _proj.customer_id:
+                _cust = db.query(models.Customer).filter(
+                    models.Customer.id == _proj.customer_id
+                ).first()
+                if _cust and _cust.url and _cust.url not in urls_to_crawl:
+                    urls_to_crawl.insert(0, _cust.url)  # prioritise customer URL
+
         crawled_content = ""
-        for url in urls_to_crawl[:4]:
+        for url in urls_to_crawl[:5]:
             try:
                 content = fetch_page_text(url)
                 if content:
                     crawled_content += f"\n\n[From {url}]\n{content[:3000]}"
             except Exception as e:
                 log.warning(f"Crawl failed for {url}: {e}")
+
+        # Prepend project/customer context to crawled content so the AI has it
+        if project_context:
+            crawled_content = project_context + crawled_content
 
         # Phase 2: Analyze notes
         note.brd_generation_phase = 2
