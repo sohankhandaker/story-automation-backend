@@ -21,6 +21,15 @@ projects_notes_router = APIRouter(prefix="/api/projects", tags=["notes"])
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+def _title_from_raw(raw: str) -> str:
+    """Extract a readable title from the first non-empty line of raw notes (max 80 chars)."""
+    for line in raw.splitlines():
+        line = line.strip()
+        if line:
+            return line[:80] + ('…' if len(line) > 80 else '')
+    return "New Note"
+
+
 def _combined_notes(note: models.MeetingNote) -> str:
     """Combine all note entries and attachment text chronologically."""
     entries = sorted(note.entries or [], key=lambda e: e.created_at)
@@ -342,7 +351,7 @@ def create_note_for_project(
         project_id=project_id,
         raw_notes=body.raw_notes,
         wiki_url=body.wiki_url or None,
-        title="New Note",
+        title=_title_from_raw(body.raw_notes),
         status="Draft",
         # Link to the project's GitHub issue so all BRD work posts there
         github_issue_url=project.github_issue_url,
@@ -399,7 +408,7 @@ def create_note(
         project_id=body.project_id or None,
         raw_notes=body.raw_notes,
         wiki_url=body.wiki_url or None,
-        title="New Note",
+        title=_title_from_raw(body.raw_notes),
         status="Draft",
     )
     db.add(note)
