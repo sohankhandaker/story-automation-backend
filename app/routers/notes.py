@@ -482,6 +482,7 @@ def upload_attachment(
     file_path.write_bytes(content)
 
     mime = file.content_type or ""
+    filename_lower = (file.filename or "").lower()
     content_text: str | None = None
 
     if "text" in mime:
@@ -491,6 +492,27 @@ def upload_attachment(
             import pypdf
             reader = pypdf.PdfReader(io.BytesIO(content))
             content_text = "\n".join(p.extract_text() or "" for p in reader.pages)
+        except Exception:
+            pass
+    elif (
+        "wordprocessingml" in mime        # .docx
+        or "msword" in mime               # .doc
+        or filename_lower.endswith(".docx")
+        or filename_lower.endswith(".doc")
+    ):
+        try:
+            import docx
+            doc = docx.Document(io.BytesIO(content))
+            paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
+            # Also extract text from tables
+            for table in doc.tables:
+                for row in table.rows:
+                    row_text = " | ".join(
+                        cell.text.strip() for cell in row.cells if cell.text.strip()
+                    )
+                    if row_text:
+                        paragraphs.append(row_text)
+            content_text = "\n".join(paragraphs) or None
         except Exception:
             pass
 
