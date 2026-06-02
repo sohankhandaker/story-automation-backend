@@ -916,9 +916,11 @@ def run_brd_approved(note_id: str):
         note.status = "Approved"
         db.commit()
 
+        # Move board to In Progress (not Done) — the issue stays open
+        # until the full BRD→PRD pipeline is complete and PRD is approved.
         if note.github_project_item_id:
             try:
-                gh.update_project_status(note.github_project_item_id, "Done", cfg=cfg)
+                gh.update_project_status(note.github_project_item_id, "In Progress", cfg=cfg)
             except Exception as e:
                 log.warning(f"GitHub board status update failed: {e}")
 
@@ -926,7 +928,9 @@ def run_brd_approved(note_id: str):
         if note.github_issue_number:
             gh.add_comment(
                 note.github_issue_number,
-                f"✅ BRD approved by {reviewer} and marked as **Done**.\n\nThank you for the review!",
+                f"✅ BRD approved by {reviewer}!\n\n"
+                f"The pipeline is now moving to **PRD generation**. "
+                f"The issue will remain open until the PRD is also approved.",
                 cfg=cfg,
             )
 

@@ -35,6 +35,8 @@ def _build_prd_comment(note: models.MeetingNote, prd: models.PrdDocument, prd_ma
     body = header + prd_markdown
     if len(body) > 60000:
         body = body[:60000] + "\n\n_(Content truncated — see app for full PRD)_"
+    if prd.github_file_url:
+        body += f"\n\n---\n\n📥 **[View / Download PRD (.md)]({prd.github_file_url})**"
     return body
 
 
@@ -104,23 +106,7 @@ def _full_prd_pipeline(prd_id: str):
         prd.status = "Pending Review"
         db.commit()
 
-        # Post PRD as a comment on the project's GitHub issue
-        if issue_number:
-            try:
-                gh.add_comment(
-                    issue_number,
-                    _build_prd_comment(note, prd, result["full_prd"]),
-                    cfg=cfg,
-                )
-                gh.add_comment(
-                    issue_number,
-                    "PRD generation complete!\n\nThe full Product Requirements Document is in the comment above.\n\nThe creator will assign a reviewer shortly.",
-                    cfg=cfg,
-                )
-            except Exception as e:
-                log.warning(f"GitHub PRD comment failed: {e}")
-
-        # Push .md file to repo for direct download
+        # Push .md file first so the download link is available in the comment
         title = note.title if note else None
         safe_title = re.sub(r'[^\w\s\-]', '', title or 'PRD').strip().replace(' ', '_')
         file_path = f"prd/{safe_title}_{prd.id[:8]}.md"
@@ -137,6 +123,22 @@ def _full_prd_pipeline(prd_id: str):
             log.info(f"PRD .md pushed to repo: {file_info['html_url']}")
         except Exception as e:
             log.warning(f"PRD file push failed: {e}")
+
+        # Post PRD as a comment (includes download link if file was pushed)
+        if issue_number:
+            try:
+                gh.add_comment(
+                    issue_number,
+                    _build_prd_comment(note, prd, result["full_prd"]),
+                    cfg=cfg,
+                )
+                gh.add_comment(
+                    issue_number,
+                    "PRD generation complete!\n\nThe full Product Requirements Document is in the comment above.\n\nThe creator will assign a reviewer shortly.",
+                    cfg=cfg,
+                )
+            except Exception as e:
+                log.warning(f"GitHub PRD comment failed: {e}")
 
     except Exception as e:
         log.error(f"PRD pipeline failed for prd_id={prd_id}: {e}")

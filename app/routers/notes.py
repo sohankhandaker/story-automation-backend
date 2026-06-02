@@ -64,6 +64,8 @@ def _build_brd_comment(note: models.MeetingNote, brd_markdown: str) -> str:
     body = header + brd_markdown
     if len(body) > 60000:
         body = body[:60000] + "\n\n_(Content truncated — see app for full BRD)_"
+    if note.github_file_url:
+        body += f"\n\n---\n\n📥 **[View / Download BRD (.md)]({note.github_file_url})**"
     return body
 
 
@@ -217,23 +219,7 @@ def _full_brd_pipeline(note_id: str):
         note.status = "Pending Review"
         db.commit()
 
-        # Post full BRD as a comment on the project's GitHub issue
-        if issue_number:
-            try:
-                gh.add_comment(
-                    issue_number,
-                    _build_brd_comment(note, result["brd_markdown"]),
-                    cfg=cfg,
-                )
-                gh.add_comment(
-                    issue_number,
-                    "BRD generation complete!\n\nThe full Business Requirements Document is in the comment above.\n\nThe creator will assign a reviewer shortly.",
-                    cfg=cfg,
-                )
-            except Exception as e:
-                log.warning(f"GitHub BRD comment failed: {e}")
-
-        # Push .md file to repo for direct download
+        # Push .md file first so the download link is available in the comment
         safe_title = re.sub(r'[^\w\s\-]', '', note.title or 'BRD').strip().replace(' ', '_')
         file_path = f"brd/{safe_title}_{note.id[:8]}.md"
         try:
@@ -249,6 +235,22 @@ def _full_brd_pipeline(note_id: str):
             log.info(f"BRD .md pushed to repo: {file_info['html_url']}")
         except Exception as e:
             log.warning(f"BRD file push failed: {e}")
+
+        # Post full BRD as a comment (includes download link if file was pushed)
+        if issue_number:
+            try:
+                gh.add_comment(
+                    issue_number,
+                    _build_brd_comment(note, result["brd_markdown"]),
+                    cfg=cfg,
+                )
+                gh.add_comment(
+                    issue_number,
+                    "BRD generation complete!\n\nThe full Business Requirements Document is in the comment above.\n\nThe creator will assign a reviewer shortly.",
+                    cfg=cfg,
+                )
+            except Exception as e:
+                log.warning(f"GitHub BRD comment failed: {e}")
 
     except Exception as e:
         log.error(f"BRD pipeline failed for note {note_id}: {e}")
