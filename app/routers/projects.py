@@ -106,6 +106,47 @@ def get_project(
     return _project_response(project, db)
 
 
+@router.delete("/{project_id}", status_code=204)
+def delete_project(
+    project_id: str,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    project = db.query(models.Project).filter(
+        models.Project.id == project_id,
+        models.Project.creator_id == current_user.id,
+    ).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    # Cascade: delete notes → entries, attachments, BRD/PRD versions
+    notes = db.query(models.MeetingNote).filter(
+        models.MeetingNote.project_id == project_id
+    ).all()
+    for note in notes:
+        db.query(models.NoteEntry).filter(
+            models.NoteEntry.note_id == note.id
+        ).delete(synchronize_session=False)
+        db.query(models.NoteAttachment).filter(
+            models.NoteAttachment.note_id == note.id
+        ).delete(synchronize_session=False)
+        db.query(models.BrdVersion).filter(
+            models.BrdVersion.note_id == note.id
+        ).delete(synchronize_session=False)
+        prd = db.query(models.PrdDocument).filter(
+            models.PrdDocument.note_id == note.id
+        ).first()
+        if prd:
+            db.query(models.PrdVersion).filter(
+                models.PrdVersion.prd_id == prd.id
+            ).delete(synchronize_session=False)
+            db.delete(prd)
+        db.delete(note)
+
+    db.delete(project)
+    db.commit()
+
+
 def _customer_dict(c: models.Customer, db: Session) -> dict:
     from .customers import _customer_response
     return _customer_response(c, db)
