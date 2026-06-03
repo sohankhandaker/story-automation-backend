@@ -1,0 +1,139 @@
+name: Build and Deploy to AKS
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  ACR_NAME: ${{ secrets.ACR_NAME }}                    # e.g. seraacr
+  ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}    # e.g. seraacr.azurecr.io
+  IMAGE_NAME: sera-be
+  AKS_CLUSTER_NAME: ${{ secrets.AKS_CLUSTER_NAME }}   # e.g. sera-aks
+  AKS_RESOURCE_GROUP: ${{ secrets.AKS_RESOURCE_GROUP }} # e.g. sera-rg
+  NAMESPACE: sera
+
+jobs:
+  build-and-deploy:
+    name: Build & Deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Checkout ───────────────────────────────────────────────────────────
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ── 2. Azure login ────────────────────────────────────────────────────────
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      # ── 3. Build & push image to ACR ─────────────────────────────────────────
+      - name: Login to ACR
+        run: az acr login --name ${{ env.ACR_NAME }}
+
+      - name: Build and push Docker image
+        run: |
+          IMAGE_TAG=${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          IMAGE_LATEST=${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:latest
+
+          docker build -t $IMAGE_TAG -t $IMAGE_LATEST .
+          docker push $IMAGE_TAG
+          docker push $IMAGE_LATEST
+
+      # ── 4. Set AKS context ───────────────────────────────────────────────────
+      - name: Set AKS context
+        uses: azure/aks-set-context@v4
+        with:
+          resource-group: ${{ env.AKS_RESOURCE_GROUP }}
+          cluster-name: ${{ env.AKS_CLUSTER_NAME }}
+
+      # ── 5. Create namespace if not exists ────────────────────────────────────
+      - name: Create namespace
+        run: kubectl create namespace ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
+
+      # ── 6. Create/update app secrets from GitHub Secrets ─────────────────────
+      - name: Apply Kubernetes secrets
+        run: |
+          kubectl create secret generic sera-be-secrets \
+            --namespace=${{ env.NAMESPACE }} \
+            --from-literal=DATABASE_URL="${{ secrets.DATABASE_URL }}" \
+            --from-literal=SECRET_KEY="${{ secrets.SECRET_KEY }}" \
+            --from-literal=ANTHROPIC_API_KEY="${{ secrets.ANTHROPIC_API_KEY }}" \
+            --from-literal=OPENAI_API_KEY="${{ secrets.OPENAI_API_KEY }}" \
+            --from-literal=GITHUB_TOKEN="${{ secrets.GH_TOKEN }}" \
+            --from-literal=GITHUB_OWNER="${{ secrets.GH_OWNER }}" \
+            --from-literal=GITHUB_REPO="${{ secrets.GH_REPO }}" \
+            --from-literal=GITHUB_PROJECT_NUMBER="${{ secrets.GH_PROJECT_NUMBER }}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      # ── 7. Deploy to AKS ──────────────────────────────────────────────────────
+      - name: Deploy to AKS
+        run: |
+          IMAGE_TAG=${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+
+          cat <<EOF | kubectl apply -f -
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: sera-be
+            namespace: ${{ env.NAMESPACE }}
+            labels:
+              app: sera-be
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: sera-be
+            template:
+              metadata:
+                labels:
+                  app: sera-be
+              spec:
+                containers:
+                  - name: sera-be
+                    image: ${IMAGE_TAG}
+                    ports:
+                      - containerPort: 8000
+                    envFrom:
+                      - secretRef:
+                          name: sera-be-secrets
+                    livenessProbe:
+                      httpGet:
+                        path: /health
+                        port: 8000
+                      initialDelaySeconds: 30
+                      periodSeconds: 10
+                    readinessProbe:
+                      httpGet:
+                        path: /health
+                        port: 8000
+                      initialDelaySeconds: 10
+                      periodSeconds: 5
+                    resources:
+                      requests:
+                        memory: "256Mi"
+                        cpu: "250m"
+                      limits:
+                        memory: "512Mi"
+                        cpu: "500m"
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: sera-be-service
+            namespace: ${{ env.NAMESPACE }}
+          spec:
+            selector:
+              app: sera-be
+            ports:
+              - protocol: TCP
+                port: 80
+                targetPort: 8000
+            type: LoadBalancer
+          EOF
+
+      # ── 8. Verify rollout ─────────────────────────────────────────────────────
+      - name: Wait for rollout
+        run: kubectl rollout status deployment/sera-be --namespace=${{ env.NAMESPACE }} --timeout=180s
