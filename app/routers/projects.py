@@ -200,7 +200,12 @@ def _customer_dict(c: models.Customer, db: Session) -> dict:
 
 def _project_response(project: models.Project, db: Session) -> dict:
     notes_count = db.query(models.MeetingNote).filter(
-        models.MeetingNote.project_id == project.id
+        models.MeetingNote.project_id == project.id,
+        models.MeetingNote.note_type != "change_request",
+    ).count()
+    change_request_count = db.query(models.MeetingNote).filter(
+        models.MeetingNote.project_id == project.id,
+        models.MeetingNote.note_type == "change_request",
     ).count()
     customer_data = None
     if project.customer_id:
@@ -230,6 +235,7 @@ def _project_response(project: models.Project, db: Session) -> dict:
         "status": project.status,
         "has_sent_prd": has_sent_prd,
         "notes_count": notes_count,
+        "change_request_count": change_request_count,
         "created_at": project.created_at,
         "updated_at": project.updated_at,
     }

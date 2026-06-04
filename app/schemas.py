@@ -103,6 +103,7 @@ class ProjectResponse(BaseModel):
     status: str = "Active"
     has_sent_prd: bool = False
     notes_count: int = 0
+    change_request_count: int = 0
     created_at: datetime
     updated_at: datetime
 
