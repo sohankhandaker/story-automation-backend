@@ -101,6 +101,7 @@ class ProjectResponse(BaseModel):
     github_issue_number: Optional[int] = None
     github_project_url: Optional[str] = None
     status: str = "Active"
+    has_sent_prd: bool = False
     notes_count: int = 0
     created_at: datetime
     updated_at: datetime
@@ -188,6 +189,11 @@ class NotesEnhanceRequest(BaseModel):
     raw_notes: str
     wiki_url: Optional[str] = None
     project_id: Optional[str] = None
+    note_type: Optional[str] = None          # "note" | "change_request"
+
+
+class EnhanceAgainstPrdRequest(BaseModel):
+    raw_text: str
 
 
 class ReviewerStatusItem(BaseModel):
@@ -199,6 +205,7 @@ class ReviewerStatusItem(BaseModel):
 class MeetingNoteResponse(BaseModel):
     id: str
     project_id: Optional[str] = None
+    note_type: str = "note"
     title: Optional[str]
     raw_notes: str
     wiki_url: Optional[str]

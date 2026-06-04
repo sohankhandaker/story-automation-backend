@@ -150,6 +150,7 @@ class MeetingNote(Base):
     wiki_url = Column(String, nullable=True)
     brd_draft = Column(Text, nullable=True)
     brd_generation_phase = Column(Integer, nullable=True)
+    note_type = Column(String, default="note")         # "note" | "change_request"
     status = Column(String, default="Draft")           # Draft | In Review | Changes Requested | Approved
     current_version_number = Column(Integer, default=0)
     # GitHub integration

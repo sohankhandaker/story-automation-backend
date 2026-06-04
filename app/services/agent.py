@@ -576,6 +576,33 @@ Be thorough. Extract every requirement and constraint. Infer reasonable values f
     return _chat(prompt, max_tokens=3000)
 
 
+def enhance_against_prd(raw_text: str, prd_content: str) -> str:
+    """
+    Enhance a change-request draft against the project's approved PRD.
+    Returns the improved, structured change-request text.
+    """
+    prompt = f"""You are a senior business analyst helping a team write a Change Request (CR).
+
+The project has an approved Product Requirements Document (PRD):
+---
+{prd_content[:6000]}
+---
+
+The user has drafted the following change request notes:
+---
+{raw_text}
+---
+
+Rewrite the change request so that it:
+1. Is clearly structured (what changes, why, impact on existing PRD sections).
+2. Explicitly references the relevant PRD sections it modifies or extends.
+3. Is concise and professional — no filler words.
+4. Preserves the user's original intent exactly.
+
+Return ONLY the enhanced change request text. Do not include any explanation or preamble."""
+    return _chat(prompt, max_tokens=2000)
+
+
 def enhance_notes_to_brd(
     raw_notes: str,
     wiki_content: str = "",

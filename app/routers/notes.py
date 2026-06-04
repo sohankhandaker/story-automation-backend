@@ -348,18 +348,43 @@ def create_note_for_project(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
+    is_cr = (body.note_type or "note") == "change_request"
+    note_title = _title_from_raw(body.raw_notes)
+
+    # For change requests create a fresh GitHub issue on the project board
+    cr_issue_url = None
+    cr_issue_number = None
+    cr_issue_node_id = None
+    cr_item_id = None
+    if is_cr and project.github_project_node_id:
+        try:
+            cfg = cfg_for_project(current_user, project)
+            issue = gh.create_issue(
+                title=f"[Change Request] {note_title}",
+                body=f"**Change Request**\n\n{body.raw_notes}",
+                cfg=cfg,
+            )
+            cr_issue_url = issue["url"]
+            cr_issue_number = issue["number"]
+            cr_issue_node_id = issue["node_id"]
+            cr_item_id = gh.add_to_project(issue["node_id"], cfg=cfg)
+            gh.update_project_status(cr_item_id, "Backlog", cfg=cfg)
+        except Exception as e:
+            log.warning(f"Could not create CR GitHub issue: {e}")
+
     note = models.MeetingNote(
         creator_id=current_user.id,
         project_id=project_id,
+        note_type="change_request" if is_cr else "note",
         raw_notes=body.raw_notes,
         wiki_url=body.wiki_url or None,
-        title=_title_from_raw(body.raw_notes),
+        title=note_title,
         status="Draft",
-        # Link to the project's GitHub issue so all BRD work posts there
-        github_issue_url=project.github_issue_url,
-        github_issue_number=project.github_issue_number,
-        github_issue_node_id=project.github_issue_node_id,
-        github_project_item_id=project.github_project_item_id,
+        # Change requests get their own issue; regular notes share the project issue
+        github_issue_url=cr_issue_url if is_cr else project.github_issue_url,
+        github_issue_number=cr_issue_number if is_cr else project.github_issue_number,
+        github_issue_node_id=cr_issue_node_id if is_cr else project.github_issue_node_id,
+        github_project_item_id=cr_item_id if is_cr else project.github_project_item_id,
     )
     db.add(note)
     db.flush()
@@ -369,6 +394,43 @@ def create_note_for_project(
     db.commit()
     db.refresh(note)
     return note
+
+
+@projects_notes_router.post("/{project_id}/enhance-against-prd")
+def enhance_against_prd(
+    project_id: str,
+    body: schemas.EnhanceAgainstPrdRequest,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    """Enhance change-request text against the project's approved PRD content."""
+    project = db.query(models.Project).filter(
+        models.Project.id == project_id,
+        models.Project.creator_id == current_user.id,
+    ).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    # Find the Sent to Planner PRD for this project
+    prd = (
+        db.query(models.PrdDocument)
+        .join(models.MeetingNote, models.MeetingNote.id == models.PrdDocument.note_id)
+        .filter(
+            models.MeetingNote.project_id == project_id,
+            models.PrdDocument.status == "Sent to Planner",
+        )
+        .first()
+    )
+    if not prd or not prd.prd_draft:
+        raise HTTPException(status_code=404, detail="No approved PRD found for this project")
+
+    try:
+        enhanced = agent.enhance_against_prd(body.raw_text, prd.prd_draft)
+    except Exception as e:
+        log.error(f"Enhance against PRD failed: {e}")
+        raise HTTPException(status_code=502, detail="AI enhancement failed")
+
+    return {"enhanced_text": enhanced}
 
 
 @projects_notes_router.get("/{project_id}/notes", response_model=schemas.MeetingNotesListResponse)
@@ -776,5 +838,17 @@ def delete_note(
     ).first()
     if not note:
         raise HTTPException(status_code=404, detail="Note not found")
+
+    # Block deletion if the note has an approved PRD
+    approved_prd = db.query(models.PrdDocument).filter(
+        models.PrdDocument.note_id == note_id,
+        models.PrdDocument.status.in_(["Approved", "Sent to Planner"]),
+    ).first()
+    if approved_prd:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot delete note: it has an approved PRD.",
+        )
+
     db.delete(note)
     db.commit()

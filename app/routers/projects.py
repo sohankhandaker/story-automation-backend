@@ -209,6 +209,13 @@ def _project_response(project: models.Project, db: Session) -> dict:
         ).first()
         if c:
             customer_data = _customer_dict(c, db)
+    # True when any note under this project has a PRD sent to the Planner
+    has_sent_prd = db.query(models.PrdDocument).join(
+        models.MeetingNote, models.MeetingNote.id == models.PrdDocument.note_id
+    ).filter(
+        models.MeetingNote.project_id == project.id,
+        models.PrdDocument.status == "Sent to Planner",
+    ).first() is not None
     return {
         "id": project.id,
         "title": project.title,
@@ -221,6 +228,7 @@ def _project_response(project: models.Project, db: Session) -> dict:
         "github_issue_number": project.github_issue_number,
         "github_project_url": project.github_project_url,
         "status": project.status,
+        "has_sent_prd": has_sent_prd,
         "notes_count": notes_count,
         "created_at": project.created_at,
         "updated_at": project.updated_at,
