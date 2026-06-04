@@ -17,6 +17,7 @@ class User(Base):
     email = Column(String, unique=True, nullable=False, index=True)
     hashed_password = Column(String, nullable=False)
     github_username = Column(String, nullable=True)
+    avatar_url = Column(String, nullable=True)
     device_tokens = Column(JSON, default=list)
     reviewer_list = Column(JSON, default=list)  # [{name, github_username}]
     # Per-user GitHub project config (overrides env vars when set)

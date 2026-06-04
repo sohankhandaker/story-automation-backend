@@ -27,6 +27,7 @@ class UserResponse(BaseModel):
     name: str
     email: str
     github_username: Optional[str]
+    avatar_url: Optional[str] = None
     reviewer_list: List[ReviewerItem] = []
     gh_owner: Optional[str] = None
     gh_repo: Optional[str] = None

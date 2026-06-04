@@ -59,6 +59,7 @@ def _migrate():
         ("projects", "url", "VARCHAR"),
         ("projects", "customer_id", "VARCHAR"),
         # Per-project GitHub Project board (Option B)
+        ("users", "avatar_url", "VARCHAR"),
         ("projects", "github_project_node_id", "VARCHAR"),
         ("projects", "github_project_url", "VARCHAR"),
         ("projects", "github_status_field_id", "VARCHAR"),
