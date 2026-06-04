@@ -135,10 +135,16 @@ def github_callback(code: str, state: str = "web", db: Session = Depends(get_db)
         db.commit()
         db.refresh(user)
         log.info(f"New SSO user created: {email}")
-    else:
-        if not user.github_username and gh_user.get("login"):
-            user.github_username = gh_user["login"]
-            db.commit()
+
+    # Always update GitHub OAuth token and pin org config so cfg_for_user()
+    # uses this user's own token for all GitHub API operations.
+    user.github_username = gh_user.get("login") or user.github_username
+    user.gh_token = gh_token                             # user's OAuth token
+    user.gh_owner = settings.github_owner               # SELISEdigitalplatforms
+    user.gh_repo = settings.github_repo                 # selise-madp
+    user.gh_project_number = settings.github_project_number  # 447
+    db.commit()
+    db.refresh(user)
 
     jwt_token = create_access_token({"sub": user.id})
 

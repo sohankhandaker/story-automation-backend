@@ -7,9 +7,9 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./app.db"
 
     github_token: str = ""
-    github_owner: str = ""
-    github_repo: str = ""
-    github_project_number: int = 1
+    github_owner: str = "SELISEdigitalplatforms"
+    github_repo: str = "selise-madp"
+    github_project_number: int = 447
 
     # GitHub OAuth SSO
     github_client_id: str = ""
