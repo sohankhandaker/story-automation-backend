@@ -191,27 +191,35 @@ def cfg_for_project(user, project) -> GHConfig:
 
 # ── Create a new GitHub Project v2 board ──────────────────────────────────────
 
-def create_project_board(title: str, description: str, cfg: GHConfig) -> dict:
-    """
-    Create a new GitHub Project v2 for the org (or user), attach a Status
-    field, and return board metadata.
-    """
-    # Resolve owner node ID
-    org_q = "query($l:String!){organization(login:$l){id}}"
-    usr_q = "query($l:String!){user(login:$l){id}}"
-    owner_id = None
-    for q in [org_q, usr_q]:
+def _resolve_owner_id(login: str, cfg: GHConfig) -> Optional[str]:
+    """Return the GraphQL node ID for an org or user login."""
+    for q in [
+        "query($l:String!){organization(login:$l){id}}",
+        "query($l:String!){user(login:$l){id}}",
+    ]:
         try:
-            res = _gql(q, {"l": cfg.owner}, cfg)
-            owner_id = (res.get("organization") or res.get("user", {})).get("id")
-            if owner_id:
-                break
+            res = _gql(q, {"l": login}, cfg)
+            oid = (res.get("organization") or res.get("user") or {}).get("id")
+            if oid:
+                return oid
         except Exception:
             continue
-    if not owner_id:
-        raise RuntimeError(f"Cannot resolve GitHub owner node ID for {cfg.owner!r}")
+    return None
 
-    # Create the project
+
+def _get_authenticated_user_node_id(cfg: GHConfig) -> Optional[str]:
+    """Return the node_id of the token owner via REST."""
+    try:
+        with httpx.Client(timeout=10) as client:
+            resp = client.get(f"{REST_BASE}/user", headers=_headers(cfg))
+            resp.raise_for_status()
+            return resp.json().get("node_id")
+    except Exception:
+        return None
+
+
+def _do_create_project_v2(owner_id: str, title: str, cfg: GHConfig) -> dict:
+    """Run createProjectV2 mutation and return project metadata."""
     create_q = """
     mutation($ownerId:ID!, $title:String!) {
       createProjectV2(input:{ownerId:$ownerId, title:$title}) {
@@ -229,7 +237,6 @@ def create_project_board(title: str, description: str, cfg: GHConfig) -> dict:
     data = _gql(create_q, {"ownerId": owner_id, "title": title}, cfg)
     project = data["createProjectV2"]["projectV2"]
 
-    # Extract Status field (created automatically by GitHub)
     status_field_id = None
     status_options: dict = {}
     for f in project["fields"]["nodes"]:
@@ -238,14 +245,46 @@ def create_project_board(title: str, description: str, cfg: GHConfig) -> dict:
             status_options = {opt["name"].lower(): opt["id"] for opt in f["options"]}
             break
 
-    log.info(f"Created GitHub project board: {title!r} #{project['number']}")
     return {
-        "project_id":       project["id"],
-        "project_number":   project["number"],
-        "project_url":      project["url"],
-        "status_field_id":  status_field_id,
-        "status_options":   status_options,
+        "project_id":      project["id"],
+        "project_number":  project["number"],
+        "project_url":     project["url"],
+        "status_field_id": status_field_id,
+        "status_options":  status_options,
     }
+
+
+def create_project_board(title: str, description: str, cfg: GHConfig) -> dict:
+    """
+    Create a new GitHub Project v2.
+    Strategy:
+      1. Try under the configured owner (org SELISEdigitalplatforms) — needs org-admin rights.
+      2. If that fails, try under the authenticated user's own account — needs only 'project' scope.
+    """
+    # Strategy 1: configured org/owner
+    org_owner_id = _resolve_owner_id(cfg.owner, cfg)
+    if org_owner_id:
+        try:
+            result = _do_create_project_v2(org_owner_id, title, cfg)
+            log.info(f"Created GitHub project board under org {cfg.owner!r}: {result['project_url']}")
+            return result
+        except Exception as e:
+            log.warning(f"Org-level board creation failed ({cfg.owner!r}): {e} — trying user account")
+
+    # Strategy 2: authenticated user's own account
+    user_node_id = _get_authenticated_user_node_id(cfg)
+    if user_node_id:
+        try:
+            result = _do_create_project_v2(user_node_id, title, cfg)
+            log.info(f"Created GitHub project board under user account: {result['project_url']}")
+            return result
+        except Exception as e:
+            log.warning(f"User-level board creation also failed: {e}")
+
+    raise RuntimeError(
+        "Could not create GitHub Project v2 board under org or user account. "
+        "Ensure the OAuth token has 'project' scope (re-login required)."
+    )
 
 
 # ── Issues ────────────────────────────────────────────────────────────────────
