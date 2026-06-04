@@ -46,21 +46,44 @@ def create_project(
     issue_title = f"[{client_name}] {body.title}"
     issue_body = _build_project_issue_body(body.title, client_name, body.short_description)
 
+    from dataclasses import replace as dc_replace
+
     issue: dict = {"url": None, "number": None, "node_id": None}
     item_id: str | None = None
+    board_node_id: str | None = None
+    board_url: str | None = None
+    status_field_id: str | None = None
+    status_options: dict = {}
 
-    # Step 1: Create GitHub issue — title matches the SERA project name
+    # Step 1: Create a new GitHub Project board with the same name as the SERA project
+    board_cfg = cfg
     try:
-        issue = gh.create_issue(title=body.title, body=issue_body, cfg=cfg)
-        log.info(f"Created GitHub issue #{issue['number']}: {body.title!r}")
+        board = gh.create_project_board(body.title, body.short_description or "", cfg=cfg)
+        board_node_id   = board["project_id"]
+        board_url       = board["project_url"]
+        status_field_id = board["status_field_id"]
+        status_options  = board["status_options"]
+        board_cfg = dc_replace(
+            cfg,
+            project_id=board_node_id,
+            status_field_id=status_field_id,
+            status_options=status_options,
+        )
+        log.info(f"Created GitHub project board: {body.title!r} → {board_url}")
+    except Exception as e:
+        log.warning(f"GitHub project board creation failed: {e}")
+
+    # Step 2: Create GitHub issue with the same title as the SERA project
+    try:
+        issue = gh.create_issue(title=body.title, body=issue_body, cfg=board_cfg)
     except Exception as e:
         log.warning(f"GitHub issue creation failed: {e}")
 
-    # Step 2: Add issue to the existing org board (#447) and set Backlog status
-    if issue.get("node_id"):
+    # Step 3: Add issue to the new board
+    if issue.get("node_id") and board_node_id:
         try:
-            item_id = gh.add_to_project(issue["node_id"], cfg=cfg)
-            gh.update_project_status(item_id, "Backlog", cfg=cfg)
+            item_id = gh.add_to_project(issue["node_id"], cfg=board_cfg)
+            gh.update_project_status(item_id, "Backlog", cfg=board_cfg)
         except Exception as e:
             log.warning(f"GitHub board item setup failed: {e}")
 
@@ -75,11 +98,10 @@ def create_project(
         github_issue_number=issue.get("number"),
         github_issue_node_id=issue.get("node_id"),
         github_project_item_id=item_id,
-        # Board is the shared org board (#447) — no per-project board columns needed
-        github_project_node_id=None,
-        github_project_url=None,
-        github_status_field_id=None,
-        github_status_options={},
+        github_project_node_id=board_node_id,
+        github_project_url=board_url,
+        github_status_field_id=status_field_id,
+        github_status_options=status_options,
     )
     db.add(project)
     db.commit()
