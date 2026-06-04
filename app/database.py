@@ -58,8 +58,10 @@ def _migrate():
         ("meeting_notes", "project_id", "VARCHAR"),
         ("projects", "url", "VARCHAR"),
         ("projects", "customer_id", "VARCHAR"),
-        # Change request type on meeting notes
+        # Change request type and planner document on meeting notes
         ("meeting_notes", "note_type", "VARCHAR"),
+        ("meeting_notes", "planner_doc_content", "TEXT"),
+        ("meeting_notes", "planner_doc_url", "VARCHAR"),
         # Per-project GitHub Project board (Option B)
         ("users", "avatar_url", "VARCHAR"),
         ("projects", "github_project_node_id", "VARCHAR"),

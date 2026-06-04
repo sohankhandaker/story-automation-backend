@@ -166,6 +166,9 @@ class MeetingNote(Base):
     pending_brd_changes = Column(JSON, nullable=True)  # {feedback, summary, comment_id} — awaiting CONFIRM CHANGES
     github_file_url = Column(String, nullable=True)    # HTML URL of BRD .md file in repo
     github_file_raw_url = Column(String, nullable=True)  # raw.githubusercontent.com download URL
+    # Change Request planner document (populated after send-cr-to-planner)
+    planner_doc_content = Column(Text, nullable=True)
+    planner_doc_url = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

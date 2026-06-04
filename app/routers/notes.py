@@ -30,6 +30,38 @@ def _title_from_raw(raw: str) -> str:
     return "New Note"
 
 
+def _note_dict(note: models.MeetingNote, db: Session) -> dict:
+    """Return a note serialised to dict, enriched with PRD info from the linked PrdDocument."""
+    prd = db.query(models.PrdDocument).filter(models.PrdDocument.note_id == note.id).first()
+    return {
+        "id": note.id,
+        "project_id": note.project_id,
+        "note_type": note.note_type or "note",
+        "title": note.title,
+        "raw_notes": note.raw_notes,
+        "wiki_url": note.wiki_url,
+        "brd_draft": note.brd_draft,
+        "brd_generation_phase": note.brd_generation_phase,
+        "status": note.status,
+        "current_version_number": note.current_version_number,
+        "github_issue_url": note.github_issue_url,
+        "github_issue_number": note.github_issue_number,
+        "reviewer_github_username": note.reviewer_github_username,
+        "reviewer_name": note.reviewer_name,
+        "reviewers": note.reviewers or [],
+        "github_file_url": note.github_file_url,
+        "github_file_raw_url": note.github_file_raw_url,
+        "planner_doc_content": note.planner_doc_content,
+        "planner_doc_url": note.planner_doc_url,
+        "prd_status": prd.status if prd else None,
+        "prd_version_number": prd.current_version_number if prd else None,
+        "prd_file_url": prd.github_file_url if prd else None,
+        "prd_file_raw_url": prd.github_file_raw_url if prd else None,
+        "created_at": note.created_at,
+        "updated_at": note.updated_at,
+    }
+
+
 def _combined_notes(note: models.MeetingNote) -> str:
     """Combine all note entries and attachment text chronologically."""
     entries = sorted(note.entries or [], key=lambda e: e.created_at)
@@ -265,6 +297,152 @@ def _full_brd_pipeline(note_id: str):
         db.close()
 
 
+def _full_cr_pipeline(note_id: str):
+    """Background: generate CR summary against approved PRD, then set status to In Review."""
+    from ..database import SessionLocal
+    db = SessionLocal()
+    try:
+        note = db.query(models.MeetingNote).filter(models.MeetingNote.id == note_id).first()
+        if not note or note.note_type != "change_request":
+            return
+
+        creator = db.query(models.User).filter(models.User.id == note.creator_id).first()
+        # Find the project's approved/sent-to-planner PRD for context
+        prd = None
+        if note.project_id:
+            prd = (
+                db.query(models.PrdDocument)
+                .join(models.MeetingNote, models.MeetingNote.id == models.PrdDocument.note_id)
+                .filter(
+                    models.MeetingNote.project_id == note.project_id,
+                    models.PrdDocument.status == "Sent to Planner",
+                )
+                .first()
+            )
+
+        prd_content = (prd.prd_draft or "") if prd else ""
+
+        # Gather attachment text
+        attachments = db.query(models.NoteAttachment).filter(
+            models.NoteAttachment.note_id == note_id
+        ).all()
+        combined = note.raw_notes
+        for att in attachments:
+            if att.content_text:
+                combined += f"\n\n[Attachment: {att.filename}]\n{att.content_text}"
+
+        summary = agent.generate_cr_summary(combined, prd_content)
+
+        note.brd_draft = summary
+        note.brd_generation_phase = None
+        note.status = "In Review"
+        db.commit()
+
+        # Post to GitHub ticket
+        if note.github_issue_number and creator:
+            try:
+                project = db.query(models.Project).filter(
+                    models.Project.id == note.project_id
+                ).first() if note.project_id else None
+                cfg = cfg_for_project(creator, project) if project else cfg_for_user(creator)
+                gh.add_comment(
+                    note.github_issue_number,
+                    f"### CR Summary Generated\n\n{summary[:1500]}{'…' if len(summary) > 1500 else ''}",
+                    cfg=cfg,
+                )
+            except Exception as e:
+                log.warning(f"CR GitHub comment failed: {e}")
+
+        log.info(f"CR pipeline complete for note {note_id}")
+    except Exception as e:
+        log.error(f"_full_cr_pipeline failed for note {note_id}: {e}")
+        try:
+            note = db.query(models.MeetingNote).filter(models.MeetingNote.id == note_id).first()
+            if note:
+                note.brd_generation_phase = None
+                db.commit()
+        except Exception:
+            pass
+    finally:
+        db.close()
+
+
+def _cr_send_to_planner_task(note_id: str):
+    """Background: generate planner doc, upload to GitHub, set CR status to Closed."""
+    from ..database import SessionLocal
+    db = SessionLocal()
+    try:
+        note = db.query(models.MeetingNote).filter(models.MeetingNote.id == note_id).first()
+        if not note or note.note_type != "change_request":
+            return
+
+        creator = db.query(models.User).filter(models.User.id == note.creator_id).first()
+        prd = None
+        if note.project_id:
+            prd = (
+                db.query(models.PrdDocument)
+                .join(models.MeetingNote, models.MeetingNote.id == models.PrdDocument.note_id)
+                .filter(
+                    models.MeetingNote.project_id == note.project_id,
+                    models.PrdDocument.status == "Sent to Planner",
+                )
+                .first()
+            )
+
+        prd_content = (prd.prd_draft or "") if prd else ""
+        cr_summary = note.brd_draft or note.raw_notes
+
+        planner_doc = agent.generate_cr_planner_doc(
+            cr_title=note.title or "Change Request",
+            cr_summary=cr_summary,
+            prd_content=prd_content,
+        )
+
+        note.planner_doc_content = planner_doc
+        note.status = "Closed"
+        db.commit()
+
+        # Upload planner doc to GitHub repo
+        planner_url = None
+        if creator:
+            project = db.query(models.Project).filter(
+                models.Project.id == note.project_id
+            ).first() if note.project_id else None
+            cfg = cfg_for_project(creator, project) if project else cfg_for_user(creator)
+            try:
+                safe = note.id.replace("-", "")[:12]
+                file_result = gh.push_file(
+                    path=f"change-requests/cr-{safe}.md",
+                    content=planner_doc,
+                    commit_message=f"docs: planner doc for CR {note.title or note.id}",
+                    cfg=cfg,
+                )
+                planner_url = file_result.get("html_url") or file_result.get("raw_url")
+                note.planner_doc_url = planner_url
+                db.commit()
+            except Exception as e:
+                log.warning(f"CR planner doc upload failed: {e}")
+
+            # Comment on GitHub ticket with the planner doc link
+            if note.github_issue_number:
+                try:
+                    link_line = f"\n📎 [Planner Document]({planner_url})" if planner_url else ""
+                    gh.add_comment(
+                        note.github_issue_number,
+                        f"### ✅ Change Request Closed — Planner Document Generated{link_line}\n\n"
+                        f"The CR has been finalised and a planner handoff document has been created.",
+                        cfg=cfg,
+                    )
+                except Exception as e:
+                    log.warning(f"CR closure comment failed: {e}")
+
+        log.info(f"CR send-to-planner complete for note {note_id}")
+    except Exception as e:
+        log.error(f"_cr_send_to_planner_task failed for {note_id}: {e}")
+    finally:
+        db.close()
+
+
 def _update_brd(note_id: str, feedback: str):
     """Update BRD from reviewer/creator feedback, save new version."""
     from ..database import SessionLocal
@@ -338,6 +516,7 @@ def _update_brd(note_id: str, feedback: str):
 def create_note_for_project(
     project_id: str,
     body: schemas.NotesEnhanceRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
@@ -379,7 +558,8 @@ def create_note_for_project(
         raw_notes=body.raw_notes,
         wiki_url=body.wiki_url or None,
         title=note_title,
-        status="Draft",
+        status="In Progress" if is_cr else "Draft",
+        brd_generation_phase=0 if is_cr else None,
         # Change requests get their own issue; regular notes share the project issue
         github_issue_url=cr_issue_url if is_cr else project.github_issue_url,
         github_issue_number=cr_issue_number if is_cr else project.github_issue_number,
@@ -393,7 +573,11 @@ def create_note_for_project(
     db.add(entry)
     db.commit()
     db.refresh(note)
-    return note
+
+    if is_cr:
+        background_tasks.add_task(_full_cr_pipeline, note.id)
+
+    return _note_dict(note, db)
 
 
 @projects_notes_router.post("/{project_id}/enhance-against-prd")
@@ -455,7 +639,7 @@ def list_notes_for_project(
         .order_by(models.MeetingNote.created_at.desc())
         .all()
     )
-    return {"notes": notes, "total": len(notes)}
+    return {"notes": [_note_dict(n, db) for n in notes], "total": len(notes)}
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -802,7 +986,31 @@ def get_note(
     ).first()
     if not note:
         raise HTTPException(status_code=404, detail="Note not found")
-    return note
+    return _note_dict(note, db)
+
+
+@router.patch("/{note_id}", response_model=schemas.MeetingNoteResponse)
+def update_note(
+    note_id: str,
+    body: schemas.NoteEntryCreate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    """Update raw_notes on a note (used to edit Change Requests before Closed)."""
+    note = db.query(models.MeetingNote).filter(
+        models.MeetingNote.id == note_id,
+        models.MeetingNote.creator_id == current_user.id,
+    ).first()
+    if not note:
+        raise HTTPException(status_code=404, detail="Note not found")
+    if note.note_type == "change_request" and note.status == "Closed":
+        raise HTTPException(status_code=409, detail="Cannot edit a Closed Change Request")
+
+    note.raw_notes = body.content
+    note.title = _title_from_raw(body.content)
+    db.commit()
+    db.refresh(note)
+    return _note_dict(note, db)
 
 
 @router.get("/{note_id}/versions", response_model=schemas.BrdVersionListResponse)
@@ -824,6 +1032,62 @@ def list_versions(
         .all()
     )
     return {"versions": versions, "total": len(versions)}
+
+
+@router.post("/{note_id}/regenerate-cr-summary", response_model=schemas.MeetingNoteResponse, status_code=202)
+def regenerate_cr_summary(
+    note_id: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    """Regenerate the AI summary for a Change Request (only while In Progress or In Review)."""
+    note = db.query(models.MeetingNote).filter(
+        models.MeetingNote.id == note_id,
+        models.MeetingNote.creator_id == current_user.id,
+    ).first()
+    if not note:
+        raise HTTPException(status_code=404, detail="Note not found")
+    if note.note_type != "change_request":
+        raise HTTPException(status_code=400, detail="Only Change Requests can use this endpoint")
+    if note.status == "Closed":
+        raise HTTPException(status_code=400, detail="Cannot regenerate summary for a Closed Change Request")
+
+    note.status = "In Progress"
+    note.brd_generation_phase = 0
+    db.commit()
+    db.refresh(note)
+
+    background_tasks.add_task(_full_cr_pipeline, note.id)
+    return _note_dict(note, db)
+
+
+@router.post("/{note_id}/send-cr-to-planner", response_model=schemas.MeetingNoteResponse, status_code=202)
+def send_cr_to_planner(
+    note_id: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    """Finalise a Change Request: generate planner document, upload to GitHub, set Closed."""
+    note = db.query(models.MeetingNote).filter(
+        models.MeetingNote.id == note_id,
+        models.MeetingNote.creator_id == current_user.id,
+    ).first()
+    if not note:
+        raise HTTPException(status_code=404, detail="Note not found")
+    if note.note_type != "change_request":
+        raise HTTPException(status_code=400, detail="Only Change Requests can be sent to Planner via this endpoint")
+    if note.status not in ("In Review",):
+        raise HTTPException(status_code=400, detail="Change Request must be In Review before sending to Planner")
+
+    note.status = "In Progress"   # show processing state while planner doc is generated
+    note.brd_generation_phase = 0
+    db.commit()
+    db.refresh(note)
+
+    background_tasks.add_task(_cr_send_to_planner_task, note.id)
+    return _note_dict(note, db)
 
 
 @router.delete("/{note_id}", status_code=204)

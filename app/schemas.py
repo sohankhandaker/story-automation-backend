@@ -220,6 +220,14 @@ class MeetingNoteResponse(BaseModel):
     reviewers: List[Any] = []
     github_file_url: Optional[str] = None
     github_file_raw_url: Optional[str] = None
+    # Change Request planner document
+    planner_doc_content: Optional[str] = None
+    planner_doc_url: Optional[str] = None
+    # PRD info — computed from linked PrdDocument (populated in list responses)
+    prd_status: Optional[str] = None
+    prd_version_number: Optional[int] = None
+    prd_file_url: Optional[str] = None
+    prd_file_raw_url: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 

@@ -576,6 +576,52 @@ Be thorough. Extract every requirement and constraint. Infer reasonable values f
     return _chat(prompt, max_tokens=3000)
 
 
+def generate_cr_summary(raw_notes: str, prd_content: str) -> str:
+    """Generate a structured Change Request summary against the approved PRD."""
+    prompt = f"""You are a senior business analyst. A project team has an approved PRD and a new Change Request.
+
+## Approved PRD (context)
+{prd_content[:5000]}
+
+## Change Request Notes
+{raw_notes}
+
+Write a professional Change Request Summary document in Markdown that includes:
+1. **Executive Summary** — one paragraph describing the change
+2. **Business Justification** — why this change is needed
+3. **Scope of Change** — which PRD sections are affected and how
+4. **Proposed Changes** — clear, numbered list of what changes
+5. **Impact Assessment** — risks, dependencies, estimated effort level (Low/Medium/High)
+6. **Acceptance Criteria** — how we know the change is complete
+
+Return ONLY the markdown document. No preamble."""
+    return _chat(prompt, max_tokens=3000)
+
+
+def generate_cr_planner_doc(cr_title: str, cr_summary: str, prd_content: str) -> str:
+    """Generate a planner handoff document for a finalised Change Request."""
+    prompt = f"""You are a technical project planner. A Change Request has been approved.
+
+## Approved PRD (reference)
+{prd_content[:4000]}
+
+## Change Request Summary
+{cr_summary[:3000]}
+
+## Change Request Title
+{cr_title}
+
+Generate a **Planner Handoff Document** in Markdown suitable for a development team. Include:
+1. **Change Overview** — what is being changed and why
+2. **Technical Tasks** — numbered breakdown of implementation tasks with clear acceptance criteria
+3. **Files / Modules Likely Affected** — based on the PRD context
+4. **Definition of Done** — checklist a developer can tick off
+5. **Testing Checklist** — what must be tested before this can be released
+
+Return ONLY the markdown document."""
+    return _chat(prompt, max_tokens=3000)
+
+
 def enhance_against_prd(raw_text: str, prd_content: str) -> str:
     """
     Enhance a change-request draft against the project's approved PRD.
