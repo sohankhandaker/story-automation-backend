@@ -137,6 +137,28 @@ def delete_customer(
     if not c:
         raise HTTPException(status_code=404, detail="Customer not found")
 
+    # Block deletion if any note under any project of this customer has an approved PRD
+    project_ids = [
+        p.id for p in db.query(models.Project.id).filter(
+            models.Project.customer_id == customer_id
+        ).all()
+    ]
+    if project_ids:
+        approved_prd = (
+            db.query(models.PrdDocument)
+            .join(models.MeetingNote, models.MeetingNote.id == models.PrdDocument.note_id)
+            .filter(
+                models.MeetingNote.project_id.in_(project_ids),
+                models.PrdDocument.status == "Approved",
+            )
+            .first()
+        )
+        if approved_prd:
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot delete customer: one or more projects contain notes with an approved PRD.",
+            )
+
     # Cascade: delete projects → notes → all child records
     projects = db.query(models.Project).filter(
         models.Project.customer_id == customer_id

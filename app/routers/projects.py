@@ -149,6 +149,22 @@ def delete_project(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
+    # Block deletion if any note under this project has an approved PRD
+    approved_prd = (
+        db.query(models.PrdDocument)
+        .join(models.MeetingNote, models.MeetingNote.id == models.PrdDocument.note_id)
+        .filter(
+            models.MeetingNote.project_id == project_id,
+            models.PrdDocument.status == "Approved",
+        )
+        .first()
+    )
+    if approved_prd:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot delete project: it contains notes with an approved PRD.",
+        )
+
     # Cascade: delete notes → entries, attachments, BRD/PRD versions
     notes = db.query(models.MeetingNote).filter(
         models.MeetingNote.project_id == project_id
