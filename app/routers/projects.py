@@ -46,51 +46,21 @@ def create_project(
     issue_title = f"[{client_name}] {body.title}"
     issue_body = _build_project_issue_body(body.title, client_name, body.short_description)
 
-    from dataclasses import replace as dc_replace
-
     issue: dict = {"url": None, "number": None, "node_id": None}
     item_id: str | None = None
-    board_node_id: str | None = None
-    board_url: str | None = None
-    status_field_id: str | None = None
-    status_options: dict = {}
 
-    # Step 1: Try to create a dedicated project board — fail gracefully
-    board_cfg = cfg   # fallback: user's existing project board
+    # Step 1: Create GitHub issue — title matches the SERA project name
     try:
-        board_title = f"{client_name} — {body.title}"
-        board = gh.create_project_board(board_title, body.short_description or "", cfg=cfg)
-        board_node_id   = board["project_id"]
-        board_url       = board["project_url"]
-        status_field_id = board["status_field_id"]
-        status_options  = board["status_options"]
-        board_cfg = dc_replace(
-            cfg,
-            project_id=board_node_id,
-            status_field_id=status_field_id,
-            status_options=status_options,
-        )
-        log.info(f"Created GitHub project board: {board_url}")
-    except Exception as e:
-        log.warning(f"GitHub project board creation failed (will use fallback board): {e}")
-        # Ensure the fallback board is initialised
-        try:
-            from ..services.github import _ensure_project
-            _ensure_project(board_cfg)
-        except Exception:
-            pass
-
-    # Step 2: Create the GitHub issue — independent of board creation
-    try:
-        issue = gh.create_issue(title=issue_title, body=issue_body, cfg=board_cfg)
+        issue = gh.create_issue(title=body.title, body=issue_body, cfg=cfg)
+        log.info(f"Created GitHub issue #{issue['number']}: {body.title!r}")
     except Exception as e:
         log.warning(f"GitHub issue creation failed: {e}")
 
-    # Step 3: Add issue to board and set status — only if we have an issue
+    # Step 2: Add issue to the existing org board (#447) and set Backlog status
     if issue.get("node_id"):
         try:
-            item_id = gh.add_to_project(issue["node_id"], cfg=board_cfg)
-            gh.update_project_status(item_id, "Backlog", cfg=board_cfg)
+            item_id = gh.add_to_project(issue["node_id"], cfg=cfg)
+            gh.update_project_status(item_id, "Backlog", cfg=cfg)
         except Exception as e:
             log.warning(f"GitHub board item setup failed: {e}")
 
@@ -105,10 +75,11 @@ def create_project(
         github_issue_number=issue.get("number"),
         github_issue_node_id=issue.get("node_id"),
         github_project_item_id=item_id,
-        github_project_node_id=board_node_id,
-        github_project_url=board_url,
-        github_status_field_id=status_field_id,
-        github_status_options=status_options,
+        # Board is the shared org board (#447) — no per-project board columns needed
+        github_project_node_id=None,
+        github_project_url=None,
+        github_status_field_id=None,
+        github_status_options={},
     )
     db.add(project)
     db.commit()
