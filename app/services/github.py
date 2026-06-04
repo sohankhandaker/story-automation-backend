@@ -257,33 +257,51 @@ def _do_create_project_v2(owner_id: str, title: str, cfg: GHConfig) -> dict:
 def create_project_board(title: str, description: str, cfg: GHConfig) -> dict:
     """
     Create a new GitHub Project v2.
-    Strategy:
-      1. Try under the configured owner (org SELISEdigitalplatforms) — needs org-admin rights.
-      2. If that fails, try under the authenticated user's own account — needs only 'project' scope.
+    Strategy 1: user token + org owner  (needs org-admin rights + project scope)
+    Strategy 2: server PAT + org owner  (needs GITHUB_TOKEN with project scope + org access)
+    Strategy 3: user token + personal   (needs only project scope, no org-admin required)
     """
-    # Strategy 1: configured org/owner
+    # Strategy 1: user token → org
     org_owner_id = _resolve_owner_id(cfg.owner, cfg)
     if org_owner_id:
         try:
             result = _do_create_project_v2(org_owner_id, title, cfg)
-            log.info(f"Created GitHub project board under org {cfg.owner!r}: {result['project_url']}")
+            log.info(f"[S1] Created board under org {cfg.owner!r}: {result['project_url']}")
             return result
         except Exception as e:
-            log.warning(f"Org-level board creation failed ({cfg.owner!r}): {e} — trying user account")
+            log.warning(f"[S1] Org board creation failed: {e}")
 
-    # Strategy 2: authenticated user's own account
+    # Strategy 2: server PAT → org (token may have org-admin project scope)
+    server_token = settings.github_token
+    if server_token and server_token != cfg.token:
+        server_cfg = GHConfig(
+            token=server_token,
+            owner=cfg.owner,
+            repo=cfg.repo,
+            project_number=cfg.project_number,
+        )
+        server_org_id = _resolve_owner_id(cfg.owner, server_cfg)
+        if server_org_id:
+            try:
+                result = _do_create_project_v2(server_org_id, title, server_cfg)
+                log.info(f"[S2] Created board under org via server PAT: {result['project_url']}")
+                return result
+            except Exception as e:
+                log.warning(f"[S2] Server PAT org board creation failed: {e}")
+
+    # Strategy 3: user token → personal GitHub account
     user_node_id = _get_authenticated_user_node_id(cfg)
     if user_node_id:
         try:
             result = _do_create_project_v2(user_node_id, title, cfg)
-            log.info(f"Created GitHub project board under user account: {result['project_url']}")
+            log.info(f"[S3] Created board under user account: {result['project_url']}")
             return result
         except Exception as e:
-            log.warning(f"User-level board creation also failed: {e}")
+            log.warning(f"[S3] User-level board creation failed: {e}")
 
     raise RuntimeError(
-        "Could not create GitHub Project v2 board under org or user account. "
-        "Ensure the OAuth token has 'project' scope (re-login required)."
+        "Could not create GitHub Project v2 board (tried org, server PAT, and user account). "
+        "Ensure GITHUB_TOKEN has 'project' scope with org access, or re-login to refresh OAuth token."
     )
 
 
