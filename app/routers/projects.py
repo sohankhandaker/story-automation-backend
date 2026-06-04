@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from .. import models, schemas
 from ..deps import get_current_user
-from ..services.github import cfg_for_user
+from ..services.github import cfg_for_user, cfg_for_project
 from ..services import github as gh
 
 log = logging.getLogger(__name__)
@@ -33,18 +33,6 @@ def create_project(
 ):
     cfg = cfg_for_user(current_user)
 
-    issue_title = f"[{body.client_name}] {body.title}"
-    issue_body = _build_project_issue_body(body.title, body.client_name, body.short_description)
-
-    try:
-        issue = gh.create_issue(title=issue_title, body=issue_body, cfg=cfg)
-        item_id = gh.add_to_project(issue["node_id"], cfg=cfg)
-        gh.update_project_status(item_id, "Backlog", cfg=cfg)
-    except Exception as e:
-        log.warning(f"GitHub issue creation failed for project: {e}")
-        issue = {"url": None, "number": None, "node_id": None}
-        item_id = None
-
     # If customer_id provided, pull client_name from it
     client_name = body.client_name
     if body.customer_id:
@@ -54,6 +42,44 @@ def create_project(
         ).first()
         if customer:
             client_name = customer.name
+
+    issue_title = f"[{client_name}] {body.title}"
+    issue_body = _build_project_issue_body(body.title, client_name, body.short_description)
+
+    issue: dict = {"url": None, "number": None, "node_id": None}
+    item_id: str | None = None
+    board_node_id: str | None = None
+    board_url: str | None = None
+    status_field_id: str | None = None
+    status_options: dict = {}
+
+    try:
+        # 1. Create a dedicated GitHub Project board for this SERA project
+        board_title = f"{client_name} — {body.title}"
+        board = gh.create_project_board(board_title, body.short_description or "", cfg=cfg)
+        board_node_id   = board["project_id"]
+        board_url       = board["project_url"]
+        status_field_id = board["status_field_id"]
+        status_options  = board["status_options"]
+
+        # Build a cfg that points at the new board so subsequent calls use it
+        from dataclasses import replace as dc_replace
+        board_cfg = dc_replace(
+            cfg,
+            project_id=board_node_id,
+            status_field_id=status_field_id,
+            status_options=status_options,
+        )
+
+        # 2. Create GitHub Issue in the repo
+        issue = gh.create_issue(title=issue_title, body=issue_body, cfg=board_cfg)
+
+        # 3. Add issue to the new board and set Backlog status
+        item_id = gh.add_to_project(issue["node_id"], cfg=board_cfg)
+        gh.update_project_status(item_id, "Backlog", cfg=board_cfg)
+
+    except Exception as e:
+        log.warning(f"GitHub setup failed for project: {e}")
 
     project = models.Project(
         creator_id=current_user.id,
@@ -66,6 +92,10 @@ def create_project(
         github_issue_number=issue.get("number"),
         github_issue_node_id=issue.get("node_id"),
         github_project_item_id=item_id,
+        github_project_node_id=board_node_id,
+        github_project_url=board_url,
+        github_status_field_id=status_field_id,
+        github_status_options=status_options,
     )
     db.add(project)
     db.commit()
@@ -173,6 +203,7 @@ def _project_response(project: models.Project, db: Session) -> dict:
         "customer": customer_data,
         "github_issue_url": project.github_issue_url,
         "github_issue_number": project.github_issue_number,
+        "github_project_url": project.github_project_url,
         "status": project.status,
         "notes_count": notes_count,
         "created_at": project.created_at,

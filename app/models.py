@@ -124,6 +124,11 @@ class Project(Base):
     github_issue_number = Column(Integer, nullable=True)
     github_issue_node_id = Column(String, nullable=True)
     github_project_item_id = Column(String, nullable=True)
+    # Per-project GitHub Project board (Option B — one board per project)
+    github_project_node_id = Column(String, nullable=True)   # board GraphQL ID
+    github_project_url = Column(String, nullable=True)        # board HTML URL
+    github_status_field_id = Column(String, nullable=True)    # Status field ID
+    github_status_options = Column(JSON, default=dict)         # {name: option_id}
     status = Column(String, default="Active")
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

@@ -11,7 +11,7 @@ from .. import models, schemas
 from ..deps import get_current_user
 from ..services import agent
 from ..services.crawler import fetch_page_text
-from ..services.github import cfg_for_user
+from ..services.github import cfg_for_user, cfg_for_project
 from ..services import github as gh
 
 log = logging.getLogger(__name__)
@@ -571,19 +571,19 @@ def mark_ready(
     cfg = cfg_for_user(current_user)
 
     if note.project_id:
-        # Project-linked note: use the project's existing GitHub issue
+        # Project-linked note: use the project's own GitHub board
         project = db.query(models.Project).filter(
             models.Project.id == note.project_id
         ).first()
         if project and project.github_issue_number:
-            # Move project board card to In Progress
+            # Use the project's dedicated board config
+            project_cfg = cfg_for_project(current_user, project)
             if project.github_project_item_id:
                 try:
-                    gh.update_project_status(project.github_project_item_id, "In Progress", cfg=cfg)
+                    gh.update_project_status(project.github_project_item_id, "In Progress", cfg=project_cfg)
                 except Exception as e:
                     log.warning(f"Board status update failed: {e}")
 
-            # Post a comment so the BU team sees work starting
             preview = note.raw_notes[:80] + ("…" if len(note.raw_notes) > 80 else "")
             try:
                 gh.add_comment(
@@ -591,7 +591,7 @@ def mark_ready(
                     f"### BRD Generation Started\n\n"
                     f"Analysing notes and generating Business Requirements Document…\n\n"
                     f"> {preview}",
-                    cfg=cfg,
+                    cfg=project_cfg,
                 )
             except Exception as e:
                 log.warning(f"GitHub start comment failed: {e}")
@@ -601,7 +601,7 @@ def mark_ready(
             note.github_issue_node_id = project.github_issue_node_id
             note.github_project_item_id = project.github_project_item_id
     else:
-        # Legacy standalone note: create its own GitHub issue
+        # Legacy standalone note: create its own GitHub issue on shared board
         preview = note.raw_notes[:60] + ("…" if len(note.raw_notes) > 60 else "")
         try:
             issue = gh.create_issue(

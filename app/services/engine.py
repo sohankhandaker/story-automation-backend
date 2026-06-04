@@ -15,7 +15,7 @@ from ..database import SessionLocal
 from ..config import settings
 from .. import models
 from . import github as gh
-from .github import cfg_for_user
+from .github import cfg_for_user, cfg_for_project
 from . import agent, email_service
 
 log = logging.getLogger(__name__)
@@ -911,7 +911,8 @@ def run_brd_approved(note_id: str):
             return
 
         creator = db.query(models.User).filter(models.User.id == note.creator_id).first()
-        cfg = cfg_for_user(creator)
+        project = db.query(models.Project).filter(models.Project.id == note.project_id).first() if note.project_id else None
+        cfg = cfg_for_project(creator, project) if project else cfg_for_user(creator)
 
         note.status = "Approved"
         db.commit()

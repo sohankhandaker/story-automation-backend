@@ -58,6 +58,11 @@ def _migrate():
         ("meeting_notes", "project_id", "VARCHAR"),
         ("projects", "url", "VARCHAR"),
         ("projects", "customer_id", "VARCHAR"),
+        # Per-project GitHub Project board (Option B)
+        ("projects", "github_project_node_id", "VARCHAR"),
+        ("projects", "github_project_url", "VARCHAR"),
+        ("projects", "github_status_field_id", "VARCHAR"),
+        ("projects", "github_status_options", "JSON"),
     ]
     is_sqlite = settings.database_url.startswith("sqlite")
     with engine.connect() as conn:

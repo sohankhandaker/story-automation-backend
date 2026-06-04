@@ -98,6 +98,7 @@ class ProjectResponse(BaseModel):
     customer: Optional[CustomerResponse] = None
     github_issue_url: Optional[str] = None
     github_issue_number: Optional[int] = None
+    github_project_url: Optional[str] = None
     status: str = "Active"
     notes_count: int = 0
     created_at: datetime

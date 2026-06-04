@@ -167,6 +167,87 @@ def init_project():
         log.warning(f"Global project init failed: {e}")
 
 
+# ── Per-project board helper ─────────────────────────────────────────────────
+
+def cfg_for_project(user, project) -> GHConfig:
+    """Return a GHConfig pre-loaded with the project's own board details."""
+    base = cfg_for_user(user)
+    if (
+        project is not None
+        and getattr(project, "github_project_node_id", None)
+    ):
+        opts = getattr(project, "github_status_options", {}) or {}
+        return GHConfig(
+            token=base.token,
+            owner=base.owner,
+            repo=base.repo,
+            project_number=getattr(project, "github_project_number_val", 0) or 0,
+            project_id=project.github_project_node_id,
+            status_field_id=getattr(project, "github_status_field_id", None),
+            status_options=opts,
+        )
+    return base
+
+
+# ── Create a new GitHub Project v2 board ──────────────────────────────────────
+
+def create_project_board(title: str, description: str, cfg: GHConfig) -> dict:
+    """
+    Create a new GitHub Project v2 for the org (or user), attach a Status
+    field, and return board metadata.
+    """
+    # Resolve owner node ID
+    org_q = "query($l:String!){organization(login:$l){id}}"
+    usr_q = "query($l:String!){user(login:$l){id}}"
+    owner_id = None
+    for q in [org_q, usr_q]:
+        try:
+            res = _gql(q, {"l": cfg.owner}, cfg)
+            owner_id = (res.get("organization") or res.get("user", {})).get("id")
+            if owner_id:
+                break
+        except Exception:
+            continue
+    if not owner_id:
+        raise RuntimeError(f"Cannot resolve GitHub owner node ID for {cfg.owner!r}")
+
+    # Create the project
+    create_q = """
+    mutation($ownerId:ID!, $title:String!) {
+      createProjectV2(input:{ownerId:$ownerId, title:$title}) {
+        projectV2 {
+          id number url
+          fields(first:20) {
+            nodes {
+              ... on ProjectV2SingleSelectField { id name options { id name } }
+            }
+          }
+        }
+      }
+    }
+    """
+    data = _gql(create_q, {"ownerId": owner_id, "title": title}, cfg)
+    project = data["createProjectV2"]["projectV2"]
+
+    # Extract Status field (created automatically by GitHub)
+    status_field_id = None
+    status_options: dict = {}
+    for f in project["fields"]["nodes"]:
+        if f.get("name", "").lower() == "status":
+            status_field_id = f["id"]
+            status_options = {opt["name"].lower(): opt["id"] for opt in f["options"]}
+            break
+
+    log.info(f"Created GitHub project board: {title!r} #{project['number']}")
+    return {
+        "project_id":       project["id"],
+        "project_number":   project["number"],
+        "project_url":      project["url"],
+        "status_field_id":  status_field_id,
+        "status_options":   status_options,
+    }
+
+
 # ── Issues ────────────────────────────────────────────────────────────────────
 
 def create_issue(title: str, body: str, cfg: Optional[GHConfig] = None) -> dict:
