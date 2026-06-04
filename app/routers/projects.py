@@ -110,6 +110,53 @@ def create_project(
     return _project_response(project, db)
 
 
+@router.get("/debug-github")
+def debug_github(current_user: models.User = Depends(get_current_user)):
+    """Diagnose GitHub project board creation — returns exact error if it fails."""
+    cfg = cfg_for_user(current_user)
+    result = {
+        "token_prefix": cfg.token[:8] + "..." if cfg.token else "MISSING",
+        "owner": cfg.owner,
+        "repo": cfg.repo,
+        "project_number": cfg.project_number,
+    }
+
+    # Step 1: resolve owner node ID
+    try:
+        owner_id = gh._resolve_owner_id(cfg.owner, cfg)
+        result["owner_id"] = owner_id
+        result["owner_id_ok"] = bool(owner_id)
+    except Exception as e:
+        result["owner_id_error"] = str(e)
+        return result
+
+    if not owner_id:
+        result["owner_id_error"] = f"Could not resolve node ID for {cfg.owner!r}"
+        return result
+
+    # Step 2: attempt createProjectV2
+    try:
+        board = gh._do_create_project_v2(owner_id, "SERA Debug Test Board", cfg)
+        result["board_created"] = True
+        result["board_url"] = board["project_url"]
+        # Clean up: delete the test board immediately
+        try:
+            from ..services.github import _gql
+            _gql(
+                "mutation($id:ID!){deleteProjectV2(input:{projectId:$id}){projectV2{id}}}",
+                {"id": board["project_id"]}, cfg
+            )
+            result["test_board_deleted"] = True
+        except Exception:
+            result["test_board_deleted"] = False
+            result["note"] = f"Test board created at {board['project_url']} — delete manually"
+    except Exception as e:
+        result["board_created"] = False
+        result["error"] = str(e)
+
+    return result
+
+
 @router.get("", response_model=schemas.ProjectListResponse)
 def list_projects(
     db: Session = Depends(get_db),
