@@ -11,6 +11,11 @@ class Settings(BaseSettings):
     github_repo: str = ""
     github_project_number: int = 1
 
+    # GitHub OAuth SSO
+    github_client_id: str = ""
+    github_client_secret: str = ""
+    web_app_url: str = "https://story-automation-mobile.onrender.com"
+
     # OpenRouter (preferred) — set this to use OpenRouter
     openrouter_api_key: str = ""
     openrouter_model: str = "anthropic/claude-3.5-sonnet"
