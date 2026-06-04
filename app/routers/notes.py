@@ -377,6 +377,10 @@ def _cr_send_to_planner_task(note_id: str):
             return
 
         creator = db.query(models.User).filter(models.User.id == note.creator_id).first()
+        if not creator:
+            log.warning(f"No creator found for note {note_id} — cannot complete CR close")
+            return
+
         prd = None
         if note.project_id:
             prd = (
@@ -392,53 +396,75 @@ def _cr_send_to_planner_task(note_id: str):
         prd_content = (prd.prd_draft or "") if prd else ""
         cr_summary = note.brd_draft or note.raw_notes
 
+        # 1. Generate the planner document
         planner_doc = agent.generate_cr_planner_doc(
             cr_title=note.title or "Change Request",
             cr_summary=cr_summary,
             prd_content=prd_content,
         )
-
         note.planner_doc_content = planner_doc
-        note.status = "Closed"
         db.commit()
 
-        # Upload planner doc to GitHub repo
-        planner_url = None
-        if creator:
-            project = db.query(models.Project).filter(
-                models.Project.id == note.project_id
-            ).first() if note.project_id else None
-            cfg = cfg_for_project(creator, project) if project else cfg_for_user(creator)
+        # 2. Upload to GitHub repo — capture both view URL and raw download URL
+        project = db.query(models.Project).filter(
+            models.Project.id == note.project_id
+        ).first() if note.project_id else None
+        cfg = cfg_for_project(creator, project) if project else cfg_for_user(creator)
+
+        html_url = None
+        raw_url = None
+        try:
+            safe = note.id.replace("-", "")[:12]
+            file_result = gh.push_file(
+                path=f"change-requests/cr-{safe}.md",
+                content=planner_doc,
+                commit_message=f"docs: planner doc for CR {note.title or note.id}",
+                cfg=cfg,
+            )
+            html_url = file_result.get("html_url")
+            raw_url = file_result.get("raw_url")
+            # Store raw URL as the direct download link
+            note.planner_doc_url = raw_url or html_url
+            db.commit()
+        except Exception as e:
+            log.warning(f"CR planner doc upload failed: {e}")
+
+        # 3. Mark as Closed AFTER upload attempt (so we know whether we have a link)
+        note.status = "Closed"
+        note.brd_generation_phase = None
+        db.commit()
+
+        # 4. Post comment to GitHub ticket with both view and download links
+        if note.github_issue_number:
             try:
-                safe = note.id.replace("-", "")[:12]
-                file_result = gh.push_file(
-                    path=f"change-requests/cr-{safe}.md",
-                    content=planner_doc,
-                    commit_message=f"docs: planner doc for CR {note.title or note.id}",
+                links = []
+                if html_url:
+                    links.append(f"📄 [View on GitHub]({html_url})")
+                if raw_url:
+                    links.append(f"⬇️ [Download Planner Document]({raw_url})")
+                links_block = "\n".join(links) if links else "_File upload failed — document is saved internally._"
+                gh.add_comment(
+                    note.github_issue_number,
+                    f"### ✅ Change Request Closed\n\n"
+                    f"The planner handoff document has been generated and is ready for the development team.\n\n"
+                    f"{links_block}",
                     cfg=cfg,
                 )
-                planner_url = file_result.get("html_url") or file_result.get("raw_url")
-                note.planner_doc_url = planner_url
-                db.commit()
             except Exception as e:
-                log.warning(f"CR planner doc upload failed: {e}")
-
-            # Comment on GitHub ticket with the planner doc link
-            if note.github_issue_number:
-                try:
-                    link_line = f"\n📎 [Planner Document]({planner_url})" if planner_url else ""
-                    gh.add_comment(
-                        note.github_issue_number,
-                        f"### ✅ Change Request Closed — Planner Document Generated{link_line}\n\n"
-                        f"The CR has been finalised and a planner handoff document has been created.",
-                        cfg=cfg,
-                    )
-                except Exception as e:
-                    log.warning(f"CR closure comment failed: {e}")
+                log.warning(f"CR closure comment failed: {e}")
 
         log.info(f"CR send-to-planner complete for note {note_id}")
     except Exception as e:
         log.error(f"_cr_send_to_planner_task failed for {note_id}: {e}")
+        # Revert to In Review so the user can retry
+        try:
+            note = db.query(models.MeetingNote).filter(models.MeetingNote.id == note_id).first()
+            if note and note.status != "Closed":
+                note.status = "In Review"
+                note.brd_generation_phase = None
+                db.commit()
+        except Exception:
+            pass
     finally:
         db.close()
 
