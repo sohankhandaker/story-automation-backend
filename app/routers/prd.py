@@ -11,6 +11,7 @@ from ..services import agent
 from ..services.github import cfg_for_user, cfg_for_project
 from ..services import github as gh
 from ..services import engine as engine_svc
+from ..services.engine import _safe_add_comment
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/notes", tags=["prd"])
@@ -93,7 +94,8 @@ def _full_prd_pipeline(prd_id: str):
             return
 
         creator = db.query(models.User).filter(models.User.id == note.creator_id).first()
-        cfg = cfg_for_user(creator)
+        project = db.query(models.Project).filter(models.Project.id == note.project_id).first() if note.project_id else None
+        cfg = cfg_for_project(creator, project) if project else cfg_for_user(creator)
         issue_number = _get_project_issue_number(note, db)
 
         def _phase_cb(phase_num: int, _total: int):
@@ -138,12 +140,24 @@ def _full_prd_pipeline(prd_id: str):
         safe_title = re.sub(r'[^\w\s\-]', '', title or 'PRD').strip().replace(' ', '_')
         file_path = f"prd/{safe_title}_{prd.id[:8]}.md"
         try:
-            file_info = gh.push_file(
-                path=file_path,
-                content=result["full_prd"],
-                commit_message=f"docs(prd): add PRD for {title or prd.id[:8]}",
-                cfg=cfg,
-            )
+            try:
+                file_info = gh.push_file(
+                    path=file_path,
+                    content=result["full_prd"],
+                    commit_message=f"docs(prd): add PRD for {title or prd.id[:8]}",
+                    cfg=cfg,
+                )
+            except Exception as e:
+                fallback = gh._env_cfg()
+                if fallback.token and fallback.token != cfg.token:
+                    file_info = gh.push_file(
+                        path=file_path,
+                        content=result["full_prd"],
+                        commit_message=f"docs(prd): add PRD for {title or prd.id[:8]}",
+                        cfg=fallback,
+                    )
+                else:
+                    raise
             prd.github_file_url = file_info["html_url"]
             prd.github_file_raw_url = file_info["raw_url"]
             db.commit()
@@ -153,19 +167,16 @@ def _full_prd_pipeline(prd_id: str):
 
         # Post PRD as a comment (includes download link if file was pushed)
         if issue_number:
-            try:
-                gh.add_comment(
-                    issue_number,
-                    _build_prd_comment(note, prd, result["full_prd"]),
-                    cfg=cfg,
-                )
-                gh.add_comment(
-                    issue_number,
-                    "PRD generation complete!\n\nThe full Product Requirements Document is in the comment above.\n\nThe creator will assign a reviewer shortly.",
-                    cfg=cfg,
-                )
-            except Exception as e:
-                log.warning(f"GitHub PRD comment failed: {e}")
+            _safe_add_comment(
+                issue_number,
+                _build_prd_comment(note, prd, result["full_prd"]),
+                cfg,
+            )
+            _safe_add_comment(
+                issue_number,
+                "PRD generation complete!\n\nThe full Product Requirements Document is in the comment above.\n\nThe creator will assign a reviewer shortly.",
+                cfg,
+            )
 
     except Exception as e:
         log.error(f"PRD pipeline failed for prd_id={prd_id}: {e}")
@@ -192,7 +203,8 @@ def _update_prd(prd_id: str, feedback: str):
 
         note = db.query(models.MeetingNote).filter(models.MeetingNote.id == prd.note_id).first()
         creator = db.query(models.User).filter(models.User.id == note.creator_id).first() if note else None
-        cfg = cfg_for_user(creator)
+        project = db.query(models.Project).filter(models.Project.id == note.project_id).first() if note and note.project_id else None
+        cfg = cfg_for_project(creator, project) if project else cfg_for_user(creator)
         issue_number = _get_project_issue_number(note, db) if note else None
 
         result = agent.update_prd_from_feedback(
@@ -218,21 +230,18 @@ def _update_prd(prd_id: str, feedback: str):
         prd.status = "Pending Review"
 
         if issue_number and note:
-            try:
-                reviewer = f"@{prd.reviewer_github_username}" if prd.reviewer_github_username else "Reviewer"
-                gh.add_comment(
-                    issue_number,
-                    _build_prd_comment(note, prd, result["updated_prd"]) + "\n\n---\n\n" +
-                    _build_prd_update_comment(
-                        version=next_ver,
-                        change_summary=result["change_summary"],
-                        changed_sections=result["changed_sections"],
-                        reviewer_mention=reviewer,
-                    ),
-                    cfg=cfg,
-                )
-            except Exception as e:
-                log.warning(f"GitHub update comment failed after PRD feedback: {e}")
+            reviewer = f"@{prd.reviewer_github_username}" if prd.reviewer_github_username else "Reviewer"
+            _safe_add_comment(
+                issue_number,
+                _build_prd_comment(note, prd, result["updated_prd"]) + "\n\n---\n\n" +
+                _build_prd_update_comment(
+                    version=next_ver,
+                    change_summary=result["change_summary"],
+                    changed_sections=result["changed_sections"],
+                    reviewer_mention=reviewer,
+                ),
+                cfg,
+            )
 
         db.commit()
 
@@ -294,29 +303,12 @@ def generate_prd(
     parent_issue_url    = (project.github_issue_url    if project else None) or note.github_issue_url
 
     if parent_issue_number:
-        try:
-            comment_cfg = cfg_for_project(current_user, project) if project else cfg
-            try:
-                gh.add_comment(
-                    parent_issue_number,
-                    f"### PRD Generation Started\n\nGenerating Product Requirements Document from the approved BRD…",
-                    cfg=comment_cfg,
-                )
-            except Exception as e:
-                if "403" in str(e):
-                    fallback = gh._env_cfg()
-                    if fallback.token and fallback.token != comment_cfg.token:
-                        gh.add_comment(
-                            parent_issue_number,
-                            f"### PRD Generation Started\n\nGenerating Product Requirements Document from the approved BRD…",
-                            cfg=fallback,
-                        )
-                    else:
-                        raise
-                else:
-                    raise
-        except Exception as e:
-            log.warning(f"GitHub PRD start comment failed: {e}")
+        comment_cfg = cfg_for_project(current_user, project) if project else cfg
+        _safe_add_comment(
+            parent_issue_number,
+            f"### PRD Generation Started\n\nGenerating Product Requirements Document from the approved BRD…",
+            comment_cfg,
+        )
 
     # PRD shares the project's issue (no PRD sub-issue).
     issue_number_for_prd = parent_issue_number
@@ -468,16 +460,13 @@ def assign_prd_reviewer(
     if is_new:
         issue_number = _get_project_issue_number(note, db)
         if issue_number:
-            try:
-                gh.add_comment(
-                    issue_number,
-                    f"@{body.reviewer_github_username} — this PRD has been assigned to you for review.\n\n"
-                    f"The full Product Requirements Document is in the comment above.\n\n"
-                    f"> Reply **`APPROVED`** to approve, or leave detailed feedback below and the AI agent will update the PRD automatically.",
-                    cfg=cfg,
-                )
-            except Exception as e:
-                log.warning(f"Failed to post PRD assignment comment: {e}")
+            _safe_add_comment(
+                issue_number,
+                f"@{body.reviewer_github_username} — this PRD has been assigned to you for review.\n\n"
+                f"The full Product Requirements Document is in the comment above.\n\n"
+                f"> Reply **`APPROVED`** to approve, or leave detailed feedback below and the AI agent will update the PRD automatically.",
+                cfg,
+            )
 
     return prd
 
@@ -561,7 +550,7 @@ def send_prd_to_planner(
     if prd.status != "Approved":
         raise HTTPException(status_code=400, detail="PRD must be Approved before sending to Planner")
 
-    cfg = cfg_for_user(current_user)
+    cfg = cfg_for_project(current_user, note.project) if note.project else cfg_for_user(current_user)
 
     prd.status = "Sent to Planner"
     db.commit()
@@ -569,13 +558,10 @@ def send_prd_to_planner(
 
     issue_number = _get_project_issue_number(note, db)
     if issue_number:
-        try:
-            gh.add_comment(
-                issue_number,
-                "PRD approved and sent to Planner Agent.",
-                cfg=cfg,
-            )
-        except Exception as e:
-            log.warning(f"Failed to post send-to-planner comment: {e}")
+        _safe_add_comment(
+            issue_number,
+            "PRD approved and sent to Planner Agent.",
+            cfg,
+        )
 
     return prd
