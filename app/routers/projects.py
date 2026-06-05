@@ -218,6 +218,20 @@ def delete_project(
     notes = db.query(models.MeetingNote).filter(
         models.MeetingNote.project_id == project_id
     ).all()
+
+    # Collect GitHub issue refs to delete after DB cleanup
+    cfg = cfg_for_project(current_user, project)
+    gh_issues_to_delete: list[tuple[str, int]] = []
+    for note in notes:
+        prd = db.query(models.PrdDocument).filter(
+            models.PrdDocument.note_id == note.id
+        ).first()
+        if prd and prd.github_issue_node_id and prd.github_issue_number:
+            gh_issues_to_delete.append((prd.github_issue_node_id, prd.github_issue_number))
+        if note.github_issue_node_id and note.github_issue_number and \
+           note.github_issue_number != project.github_issue_number:
+            gh_issues_to_delete.append((note.github_issue_node_id, note.github_issue_number))
+
     for note in notes:
         db.query(models.NoteEntry).filter(
             models.NoteEntry.note_id == note.id
@@ -238,8 +252,22 @@ def delete_project(
             db.delete(prd)
         db.delete(note)
 
+    project_issue_node_id = project.github_issue_node_id
+    project_issue_number = project.github_issue_number
     db.delete(project)
     db.commit()
+
+    # Delete the project's main GitHub issue and all sub-issues.
+    if project_issue_node_id and project_issue_number:
+        try:
+            gh.delete_issue(project_issue_node_id, project_issue_number, cfg=cfg)
+        except Exception as e:
+            log.warning(f"GitHub project issue delete failed: {e}")
+    for node_id, number in gh_issues_to_delete:
+        try:
+            gh.delete_issue(node_id, number, cfg=cfg)
+        except Exception as e:
+            log.warning(f"GitHub sub-issue #{number} delete failed: {e}")
 
 
 def _customer_dict(c: models.Customer, db: Session) -> dict:

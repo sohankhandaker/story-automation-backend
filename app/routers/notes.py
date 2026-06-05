@@ -1257,5 +1257,25 @@ def delete_note(
             detail="Cannot delete note: it has an approved PRD.",
         )
 
+    # Delete the note's own GitHub sub-issue (and any PRD sub-issue under it).
+    cfg = cfg_for_user(current_user)
+    prd = db.query(models.PrdDocument).filter(
+        models.PrdDocument.note_id == note_id
+    ).first()
+    if prd and prd.github_issue_node_id and prd.github_issue_number:
+        try:
+            gh.delete_issue(prd.github_issue_node_id, prd.github_issue_number, cfg=cfg)
+        except Exception as e:
+            log.warning(f"GitHub PRD issue delete failed: {e}")
+    if note.github_issue_node_id and note.github_issue_number:
+        # Only delete if the note owns its own sub-issue (not a legacy fallback to project's issue)
+        project = db.query(models.Project).filter(models.Project.id == note.project_id).first() if note.project_id else None
+        owns_sub_issue = not project or note.github_issue_number != project.github_issue_number
+        if owns_sub_issue:
+            try:
+                gh.delete_issue(note.github_issue_node_id, note.github_issue_number, cfg=cfg)
+            except Exception as e:
+                log.warning(f"GitHub note issue delete failed: {e}")
+
     db.delete(note)
     db.commit()

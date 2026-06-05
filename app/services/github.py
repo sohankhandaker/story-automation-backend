@@ -375,6 +375,33 @@ def update_issue_body(issue_number: int, body: str, cfg: Optional[GHConfig] = No
         resp.raise_for_status()
 
 
+def close_issue(issue_number: int, cfg: Optional[GHConfig] = None) -> None:
+    cfg = cfg or _env_cfg()
+    with httpx.Client(timeout=30) as client:
+        resp = client.patch(
+            f"{REST_BASE}/repos/{cfg.owner}/{cfg.repo}/issues/{issue_number}",
+            json={"state": "closed"},
+            headers=_headers(cfg),
+        )
+        resp.raise_for_status()
+
+
+def delete_issue(issue_node_id: str, issue_number: int,
+                 cfg: Optional[GHConfig] = None) -> None:
+    """Hard-delete an issue. Requires admin on the repo (GraphQL deleteIssue).
+    Falls back to closing the issue if delete is not permitted."""
+    cfg = cfg or _env_cfg()
+    try:
+        _gql(
+            "mutation($id:ID!){deleteIssue(input:{issueId:$id}){clientMutationId}}",
+            {"id": issue_node_id},
+            cfg,
+        )
+    except Exception:
+        # Fallback: close the issue if hard-delete is not permitted (no admin)
+        close_issue(issue_number, cfg=cfg)
+
+
 def add_comment(issue_number: int, body: str, cfg: Optional[GHConfig] = None) -> int:
     cfg = cfg or _env_cfg()
     with httpx.Client(timeout=30) as client:
