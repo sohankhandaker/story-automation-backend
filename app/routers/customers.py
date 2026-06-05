@@ -144,6 +144,21 @@ def delete_customer(
         ).all()
     ]
     if project_ids:
+        # Block deletion if any note under any project of this customer has an approved BRD
+        approved_brd_note = (
+            db.query(models.MeetingNote)
+            .filter(
+                models.MeetingNote.project_id.in_(project_ids),
+                models.MeetingNote.status == "Approved",
+            )
+            .first()
+        )
+        if approved_brd_note:
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot delete customer: one or more projects contain notes with an approved BRD.",
+            )
+
         approved_prd = (
             db.query(models.PrdDocument)
             .join(models.MeetingNote, models.MeetingNote.id == models.PrdDocument.note_id)

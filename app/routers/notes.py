@@ -495,19 +495,25 @@ def _cr_send_to_planner_task(note_id: str):
         note.brd_generation_phase = None
         db.commit()
 
-        # 4. Post comment to GitHub ticket with both view and download links
+        # 4. Post comment to GitHub ticket with the generated summary + download link
         if note.github_issue_number:
             try:
                 links = []
-                if html_url:
-                    links.append(f"📄 [View on GitHub]({html_url})")
                 if raw_url:
                     links.append(f"⬇️ [Download Planner Document]({raw_url})")
-                links_block = "\n".join(links) if links else "_File upload failed — document is saved internally._"
+                if html_url:
+                    links.append(f"📄 [View on GitHub]({html_url})")
+                links_block = (
+                    "\n".join(links)
+                    if links
+                    else "_File upload failed — document is saved internally._"
+                )
+                title_line = note.title or "Change Request"
                 _safe_add_comment(
                     note.github_issue_number,
-                    f"### ✅ Change Request Closed\n\n"
-                    f"The planner handoff document has been generated and is ready for the development team.\n\n"
+                    f"### ✅ Change Request Sent to Planner — {title_line}\n\n"
+                    f"{cr_summary}\n\n"
+                    f"---\n\n"
                     f"{links_block}",
                     cfg,
                 )
@@ -1276,6 +1282,20 @@ def delete_note(
     ).first()
     if not note:
         raise HTTPException(status_code=404, detail="Note not found")
+
+    # Block deletion of CRs that have already been sent to planner
+    if note.note_type == "change_request" and note.status == "Closed":
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot delete change request: it has already been sent to the planner.",
+        )
+
+    # Block deletion if the note's BRD has been approved
+    if note.status == "Approved":
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot delete note: its BRD has been approved.",
+        )
 
     # Block deletion if the note has an approved PRD
     approved_prd = db.query(models.PrdDocument).filter(
