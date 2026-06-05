@@ -188,10 +188,10 @@ def run_ready_column(task_id: str):
 
                 if task.github_issue_number:
                     try:
-                        gh.add_comment(
+                        _safe_add_comment(
                             task.github_issue_number,
                             f"### Phase {phase_num}/10: {phase_name}\n\n{content}",
-                            cfg=cfg,
+                            cfg,
                         )
                     except Exception as e:
                         log.warning(f"GitHub comment failed for phase {phase_num}: {e}")
@@ -252,11 +252,11 @@ def run_review_comment(task_id: str, comment_texts: list[str], comment_ids: list
                 "Please resolve manually with the reviewer.",
             )
             if task.github_issue_number:
-                gh.add_comment(
+                _safe_add_comment(
                     task.github_issue_number,
                     f"⚠️ Maximum review cycles ({task.max_review_cycles}) reached. "
                     "Manual resolution required.",
-                    cfg=cfg,
+                    cfg,
                 )
             return
 
@@ -283,10 +283,10 @@ def run_review_comment(task_id: str, comment_texts: list[str], comment_ids: list
             "Updating the story…",
         )
         if task.github_issue_number:
-            gh.add_comment(
+            _safe_add_comment(
                 task.github_issue_number,
                 "🔄 Changes noted. Updating the story based on reviewer feedback…",
-                cfg=cfg,
+                cfg,
             )
 
         current_story = agent.build_full_story(task.story_phases or [])
@@ -314,14 +314,14 @@ def run_review_comment(task_id: str, comment_texts: list[str], comment_ids: list
                 log.warning(f"Failed to update issue body after review cycle: {e}")
 
             mention = f"@{task.reviewer_github_username}" if task.reviewer_github_username else "Reviewer"
-            gh.add_comment(
+            _safe_add_comment(
                 task.github_issue_number,
                 f"## ✏️ Story Revised (Cycle {cycle_num})\n\n"
                 f"**Changes summary:** {change_summary}\n\n"
                 f"The issue description above has been updated with the revised story.\n\n"
                 f"{mention} — please check the updated story in the issue description.\n\n"
                 f"> Reply **`APPROVED`** to approve, or leave further feedback below.",
-                cfg=cfg,
+                cfg,
             )
 
         _update_task_status(db, task, "In Review", cfg=cfg)
@@ -399,11 +399,11 @@ def run_done_by_reviewer(task_id: str):
             f"GitHub Issue: {task.github_issue_url}",
         )
         if task.github_issue_number:
-            gh.add_comment(
+            _safe_add_comment(
                 task.github_issue_number,
                 f"✅ Story approved and marked as **Done** by @{task.reviewer_github_username}.\n\n"
                 "Thank you for the review!",
-                cfg=cfg,
+                cfg,
             )
         _log_activity(db, task, "Task approved and marked Done", "DONE_BY_REVIEWER")
 
@@ -714,11 +714,11 @@ def _check_brd_reviewer_comments(db: Session, note: models.MeetingNote):
                 pending_reviewers = [r["github_username"] for r in reviewers if r["status"] != "Approved"]
                 try:
                     approver_names = ", ".join(f"@{c['user']['login']}" for c in approvals)
-                    gh.add_comment(
+                    _safe_add_comment(
                         note.github_issue_number,
                         f"✅ {approver_names} approved the BRD.\n\n"
                         f"Still waiting for approval from: {', '.join('@' + u for u in pending_reviewers)}",
-                        cfg=cfg,
+                        cfg,
                     )
                 except Exception as e:
                     log.warning(f"Failed to post partial approval comment: {e}")
@@ -791,10 +791,10 @@ def run_brd_review_comment(note_id: str, comment_texts: list[str], comment_ids: 
         db.commit()
 
         if note.github_issue_number:
-            gh.add_comment(
+            _safe_add_comment(
                 note.github_issue_number,
                 "🔄 Feedback received. Updating the BRD based on reviewer comments…",
-                cfg=cfg,
+                cfg,
             )
 
         result = agent.update_brd_from_feedback(
@@ -827,7 +827,7 @@ def run_brd_review_comment(note_id: str, comment_texts: list[str], comment_ids: 
                     cfg=cfg,
                 )
                 reviewer = f"@{note.reviewer_github_username}" if note.reviewer_github_username else "Reviewer"
-                gh.add_comment(
+                _safe_add_comment(
                     note.github_issue_number,
                     _build_brd_update_comment(
                         version=next_ver,
@@ -836,7 +836,7 @@ def run_brd_review_comment(note_id: str, comment_texts: list[str], comment_ids: 
                         updated_markdown=result["updated_markdown"],
                         reviewer_mention=reviewer,
                     ),
-                    cfg=cfg,
+                    cfg,
                 )
             except Exception as e:
                 log.warning(f"GitHub update failed after BRD review comment: {e}")
@@ -867,13 +867,13 @@ def run_brd_answer_question(note_id: str, question: str, comment_id: int):
         cfg = cfg_for_user(creator)
 
         answer = agent.answer_brd_question(question, note.brd_draft)
-        gh.add_comment(
+        _safe_add_comment(
             note.github_issue_number,
             f"**Answer to your question:**\n\n{answer}\n\n"
             f"---\n"
             f"_The BRD has not been modified. If you'd like changes made, "
             f"describe them and I'll propose an update for your confirmation._",
-            cfg=cfg,
+            cfg,
         )
         log.info(f"Answered BRD question for note {note_id} (comment {comment_id})")
     except Exception as e:
@@ -906,14 +906,14 @@ def run_brd_propose_changes(note_id: str, feedback: str, comment_ids: list):
         db.commit()
 
         reviewer = f"@{note.reviewer_github_username}" if note.reviewer_github_username else "Reviewer"
-        gh.add_comment(
+        _safe_add_comment(
             note.github_issue_number,
             f"**Proposed BRD Updates:**\n\n{summary}\n\n"
             f"---\n"
             f"{reviewer} — Reply **`CONFIRM CHANGES`** to apply these updates to the BRD, "
             f"or provide additional feedback to refine them.\n\n"
             f"_The BRD has not been modified yet._",
-            cfg=cfg,
+            cfg,
         )
         log.info(f"Proposed BRD changes for note {note_id}, awaiting confirmation")
     except Exception as e:
@@ -1036,11 +1036,11 @@ def _check_prd_reviewer_comments(db: Session, prd: models.PrdDocument):
                 pending_reviewers = [r["github_username"] for r in reviewers if r["status"] != "Approved"]
                 try:
                     approver_names = ", ".join(f"@{c['user']['login']}" for c in approvals)
-                    gh.add_comment(
+                    _safe_add_comment(
                         prd.github_issue_number,
                         f"✅ {approver_names} approved the PRD.\n\n"
                         f"Still waiting for approval from: {', '.join('@' + u for u in pending_reviewers)}",
-                        cfg=cfg,
+                        cfg,
                     )
                 except Exception as e:
                     log.warning(f"Failed to post partial PRD approval comment: {e}")
@@ -1104,13 +1104,13 @@ def run_prd_answer_question(prd_id: str, question: str, comment_id: int):
         cfg = cfg_for_user(creator)
 
         answer = agent.answer_brd_question(question, prd.prd_draft)
-        gh.add_comment(
+        _safe_add_comment(
             prd.github_issue_number,
             f"**Answer to your question:**\n\n{answer}\n\n"
             f"---\n"
             f"_The PRD has not been modified. If you'd like changes made, "
             f"describe them and I'll propose an update for your confirmation._",
-            cfg=cfg,
+            cfg,
         )
         log.info(f"Answered PRD question for prd {prd_id} (comment {comment_id})")
     except Exception as e:
@@ -1141,14 +1141,14 @@ def run_prd_propose_changes(prd_id: str, feedback: str, comment_ids: list):
         db.commit()
 
         reviewer = f"@{prd.reviewer_github_username}" if prd.reviewer_github_username else "Reviewer"
-        gh.add_comment(
+        _safe_add_comment(
             prd.github_issue_number,
             f"**Proposed PRD Updates:**\n\n{summary}\n\n"
             f"---\n"
             f"{reviewer} — Reply **`CONFIRM CHANGES`** to apply these updates to the PRD, "
             f"or provide additional feedback to refine them.\n\n"
             f"_The PRD has not been modified yet._",
-            cfg=cfg,
+            cfg,
         )
         log.info(f"Proposed PRD changes for prd {prd_id}, awaiting confirmation")
     except Exception as e:
@@ -1177,8 +1177,8 @@ def run_prd_review_comment(prd_id: str, comment_texts: list[str], comment_ids: l
         db.commit()
 
         if prd.github_issue_number:
-            gh.add_comment(prd.github_issue_number,
-                "🔄 Feedback confirmed. Updating the PRD…", cfg=cfg)
+            _safe_add_comment(prd.github_issue_number,
+                "🔄 Feedback confirmed. Updating the PRD…", cfg)
 
         result = agent.update_prd_from_feedback(
             prd_content=prd.prd_draft or "",
@@ -1209,7 +1209,7 @@ def run_prd_review_comment(prd_id: str, comment_texts: list[str], comment_ids: l
                     cfg=cfg,
                 )
                 reviewer = f"@{prd.reviewer_github_username}" if prd.reviewer_github_username else "Reviewer"
-                gh.add_comment(
+                _safe_add_comment(
                     prd.github_issue_number,
                     _build_prd_update_comment(
                         version=next_ver,
@@ -1217,7 +1217,7 @@ def run_prd_review_comment(prd_id: str, comment_texts: list[str], comment_ids: l
                         changed_sections=result["changed_sections"],
                         reviewer_mention=reviewer,
                     ),
-                    cfg=cfg,
+                    cfg,
                 )
             except Exception as e:
                 log.warning(f"GitHub update failed after PRD review comment: {e}")
@@ -1259,11 +1259,11 @@ def run_prd_approved(prd_id: str):
         if prd.github_issue_number:
             try:
                 reviewer = prd.reviewer_name or prd.reviewer_github_username or "the reviewer"
-                gh.add_comment(
+                _safe_add_comment(
                     prd.github_issue_number,
                     f"✅ PRD approved by {reviewer}!\n\n"
                     f"The PRD is ready to be sent to the Planner.",
-                    cfg=cfg,
+                    cfg,
                 )
             except Exception as e:
                 log.warning(f"PRD approval comment failed: {e}")

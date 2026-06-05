@@ -504,12 +504,12 @@ def _cr_send_to_planner_task(note_id: str):
                 if raw_url:
                     links.append(f"⬇️ [Download Planner Document]({raw_url})")
                 links_block = "\n".join(links) if links else "_File upload failed — document is saved internally._"
-                gh.add_comment(
+                _safe_add_comment(
                     note.github_issue_number,
                     f"### ✅ Change Request Closed\n\n"
                     f"The planner handoff document has been generated and is ready for the development team.\n\n"
                     f"{links_block}",
-                    cfg=cfg,
+                    cfg,
                 )
             except Exception as e:
                 log.warning(f"CR closure comment failed: {e}")
@@ -629,18 +629,7 @@ def create_note_for_project(
                 f"### {heading}: {note_title}\n\n"
                 f"{body.raw_notes}"
             )
-            try:
-                gh.add_comment(project.github_issue_number, comment_body, cfg=cfg)
-            except Exception as e:
-                if "403" in str(e):
-                    fallback = gh._env_cfg()
-                    if fallback.token and fallback.token != cfg.token:
-                        log.info("Note comment 403 — retrying with server PAT")
-                        gh.add_comment(project.github_issue_number, comment_body, cfg=fallback)
-                    else:
-                        raise
-                else:
-                    raise
+            _safe_add_comment(project.github_issue_number, comment_body, cfg)
         except Exception as e:
             log.warning(f"Could not post note as comment on project issue: {e}")
 
@@ -938,12 +927,12 @@ def mark_ready(
             preview = note.raw_notes[:80] + ("…" if len(note.raw_notes) > 80 else "")
             issue_num = note.github_issue_number or project.github_issue_number
             try:
-                gh.add_comment(
+                _safe_add_comment(
                     issue_num,
                     f"### BRD Generation Started\n\n"
                     f"Analysing notes and generating Business Requirements Document…\n\n"
                     f"> {preview}",
-                    cfg=project_cfg,
+                    project_cfg,
                 )
             except Exception as e:
                 log.warning(f"GitHub start comment failed: {e}")
@@ -1047,12 +1036,12 @@ def assign_reviewer(
         issue_number = _get_project_issue_number(note, db)
         if issue_number:
             try:
-                gh.add_comment(
+                _safe_add_comment(
                     issue_number,
                     f"@{body.reviewer_github_username} — this BRD has been assigned to you for review.\n\n"
                     f"The full Business Requirements Document is in the comment above.\n\n"
                     f"> Reply **`APPROVED`** to approve, or leave detailed feedback below and the AI agent will update the BRD automatically.",
-                    cfg=cfg,
+                    cfg,
                 )
             except Exception as e:
                 log.warning(f"Failed to post assignment comment: {e}")
@@ -1234,12 +1223,12 @@ def send_brd_to_planner(
             cfg = cfg_for_user(current_user)
             download_url = note.github_file_raw_url or note.github_file_url or ""
             link_line = f"\n\n📄 **[Download BRD]({download_url})**" if download_url else ""
-            gh.add_comment(
+            _safe_add_comment(
                 issue_number,
                 f"### ✅ BRD Sent to Planner{link_line}\n\n"
                 f"The approved Business Requirements Document has been handed off to the planning team. "
                 f"The planner can download the BRD above and begin sprint planning.",
-                cfg=cfg,
+                cfg,
             )
         except Exception as e:
             log.warning(f"send-brd-to-planner GitHub comment failed: {e}")

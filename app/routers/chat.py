@@ -6,6 +6,7 @@ from .. import models, schemas
 from ..deps import get_current_user
 from ..services import github as gh, agent, email_service
 from ..services.github import cfg_for_user
+from ..services.engine import _safe_add_comment
 
 router = APIRouter(prefix="/api/tasks", tags=["chat"])
 
@@ -71,26 +72,25 @@ def send_chat(
                 task.reviewer_name = reviewer_name
 
             if task.github_issue_number:
-                try:
-                    gh.add_comment(
-                        task.github_issue_number,
-                        f"👋 @{github_username} — your review is requested for this user story.\n\n"
-                        f"**The full story is in the issue description above** (scroll to the top).\n\n"
-                        f"---\n\n"
-                        f"### How to respond\n\n"
-                        f"**To give feedback:**\n"
-                        f"Leave a comment below describing what should be changed. "
-                        f"The AI agent will update the story and notify you.\n\n"
-                        f"**To approve:**\n"
-                        f"Reply with a comment containing **`APPROVED`** (or `LGTM` / `Looks good`) "
-                        f"and the story will be marked as Done automatically.\n\n"
-                        f"---\n"
-                        f"*Requested by @{current_user.github_username or current_user.name}*",
-                        cfg=user_cfg,
-                    )
+                if _safe_add_comment(
+                    task.github_issue_number,
+                    f"👋 @{github_username} — your review is requested for this user story.\n\n"
+                    f"**The full story is in the issue description above** (scroll to the top).\n\n"
+                    f"---\n\n"
+                    f"### How to respond\n\n"
+                    f"**To give feedback:**\n"
+                    f"Leave a comment below describing what should be changed. "
+                    f"The AI agent will update the story and notify you.\n\n"
+                    f"**To approve:**\n"
+                    f"Reply with a comment containing **`APPROVED`** (or `LGTM` / `Looks good`) "
+                    f"and the story will be marked as Done automatically.\n\n"
+                    f"---\n"
+                    f"*Requested by @{current_user.github_username or current_user.name}*",
+                    user_cfg,
+                ):
                     replies.append(f"@{github_username} notified via GitHub.")
-                except Exception as e:
-                    replies.append(f"@{github_username} — GitHub notification failed: {e}")
+                else:
+                    replies.append(f"@{github_username} — GitHub notification failed.")
 
             if reviewer_email and task.github_issue_url:
                 sent = email_service.send_review_request(
