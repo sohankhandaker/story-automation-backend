@@ -446,6 +446,55 @@ def add_to_project(issue_node_id: str, cfg: Optional[GHConfig] = None) -> str:
     return data["addProjectV2ItemById"]["item"]["id"]
 
 
+def remove_issue_from_project(issue_node_id: str,
+                               cfg: Optional[GHConfig] = None) -> int:
+    """Remove an issue from the configured project board, if present.
+
+    GitHub auto-adds sub-issues to the parent's project board via inherited
+    membership. To keep notes/CRs out of the board (they live under the
+    project parent issue), call this after `add_sub_issue`.
+
+    Returns the number of project items deleted.
+    """
+    cfg = cfg or _env_cfg()
+    _ensure_project(cfg)
+    query = """
+    query($id: ID!) {
+      node(id: $id) {
+        ... on Issue {
+          projectItems(first: 20) {
+            nodes { id project { id } }
+          }
+        }
+      }
+    }
+    """
+    try:
+        data = _gql(query, {"id": issue_node_id}, cfg)
+        items = (data.get("node") or {}).get("projectItems", {}).get("nodes", []) or []
+    except Exception as e:
+        log.warning(f"remove_issue_from_project: query failed: {e}")
+        return 0
+
+    deleted = 0
+    delete_mutation = """
+    mutation($projectId: ID!, $itemId: ID!) {
+      deleteProjectV2Item(input: {projectId: $projectId, itemId: $itemId}) {
+        deletedItemId
+      }
+    }
+    """
+    for item in items:
+        if (item.get("project") or {}).get("id") != cfg.project_id:
+            continue
+        try:
+            _gql(delete_mutation, {"projectId": cfg.project_id, "itemId": item["id"]}, cfg)
+            deleted += 1
+        except Exception as e:
+            log.warning(f"remove_issue_from_project: delete failed for {item['id']}: {e}")
+    return deleted
+
+
 def update_project_status(item_id: str, status_name: str,
                            cfg: Optional[GHConfig] = None) -> None:
     cfg = cfg or _env_cfg()

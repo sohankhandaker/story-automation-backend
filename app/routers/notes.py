@@ -292,12 +292,17 @@ def _full_brd_pipeline(note_id: str):
             except Exception as e:
                 log.warning(f"GitHub BRD comment failed: {e}")
 
-        # Move the note's own sub-issue to In Review on the board
-        if note.github_project_item_id:
-            try:
-                gh.update_project_status(note.github_project_item_id, "In Review", cfg=cfg)
-            except Exception as e:
-                log.warning(f"Board In Review update failed after BRD complete: {e}")
+        # Move the parent project's board card to In Review when BRD is ready.
+        # (Notes are sub-issues and don't have their own board cards.)
+        if note.project_id:
+            _proj = db.query(models.Project).filter(
+                models.Project.id == note.project_id
+            ).first()
+            if _proj and _proj.github_project_item_id:
+                try:
+                    gh.update_project_status(_proj.github_project_item_id, "In Review", cfg=cfg)
+                except Exception as e:
+                    log.warning(f"Board In Review update failed after BRD complete: {e}")
 
     except Exception as e:
         log.error(f"BRD pipeline failed for note {note_id}: {e}")
@@ -613,9 +618,14 @@ def create_note_for_project(
             except Exception as e:
                 log.warning(f"add_sub_issue failed for note issue #{sub_issue_number}: {e}")
 
-            # Note: do NOT add the sub-issue to the project board. We want it to
-            # live only inside the parent project issue (as a sub-issue), not
-            # appear as a separate card on the board.
+            # GitHub Projects v2 auto-inherits the parent's board membership
+            # onto sub-issues, so the new note issue would show up as its own
+            # card. Remove it so the sub-issue lives only under the parent.
+            try:
+                project_cfg = cfg_for_project(current_user, project)
+                gh.remove_issue_from_project(sub_issue_node_id, cfg=project_cfg)
+            except Exception as e:
+                log.warning(f"remove_issue_from_project failed for note issue #{sub_issue_number}: {e}")
         except Exception as e:
             log.warning(f"Could not create GitHub sub-issue for note: {e}")
 
@@ -893,10 +903,12 @@ def mark_ready(
         ).first()
         if project and project.github_issue_number:
             project_cfg = cfg_for_project(current_user, project)
-            # Update note's own sub-issue board item to In Progress
-            if note.github_project_item_id:
+            # Notes are sub-issues with no board card of their own, so move
+            # the *parent project* card to In Progress when BRD generation
+            # starts (so the board reflects active work).
+            if project.github_project_item_id:
                 try:
-                    gh.update_project_status(note.github_project_item_id, "In Progress", cfg=project_cfg)
+                    gh.update_project_status(project.github_project_item_id, "In Progress", cfg=project_cfg)
                 except Exception as e:
                     log.warning(f"Board status update failed: {e}")
 
@@ -976,11 +988,18 @@ def assign_reviewer(
 
     cfg = cfg_for_user(current_user)
 
-    if note.github_project_item_id:
-        try:
-            gh.update_project_status(note.github_project_item_id, "In Review", cfg=cfg)
-        except Exception as e:
-            log.warning(f"Board status update failed: {e}")
+    # Move the parent project's board card to In Review (notes are sub-issues
+    # without their own board cards).
+    if note.project_id:
+        _proj = db.query(models.Project).filter(
+            models.Project.id == note.project_id
+        ).first()
+        if _proj and _proj.github_project_item_id:
+            try:
+                project_cfg = cfg_for_project(current_user, _proj)
+                gh.update_project_status(_proj.github_project_item_id, "In Review", cfg=project_cfg)
+            except Exception as e:
+                log.warning(f"Board status update failed: {e}")
 
     # Append to reviewers list (no duplicates)
     reviewers = list(note.reviewers or [])

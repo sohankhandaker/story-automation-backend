@@ -8,7 +8,7 @@ from ..database import get_db
 from .. import models, schemas
 from ..deps import get_current_user
 from ..services import agent
-from ..services.github import cfg_for_user
+from ..services.github import cfg_for_user, cfg_for_project
 from ..services import github as gh
 from ..services import engine as engine_svc
 
@@ -451,12 +451,18 @@ def assign_prd_reviewer(
 
     cfg = cfg_for_user(current_user)
 
-    item_id = note.github_project_item_id
-    if item_id:
-        try:
-            gh.update_project_status(item_id, "In Review", cfg=cfg)
-        except Exception as e:
-            log.warning(f"PRD board status update failed: {e}")
+    # Move parent project's board card to In Review (PRD lives under a
+    # sub-issue with no board card of its own).
+    if note.project_id:
+        _proj = db.query(models.Project).filter(
+            models.Project.id == note.project_id
+        ).first()
+        if _proj and _proj.github_project_item_id:
+            try:
+                project_cfg = cfg_for_project(current_user, _proj)
+                gh.update_project_status(_proj.github_project_item_id, "In Review", cfg=project_cfg)
+            except Exception as e:
+                log.warning(f"PRD board status update failed: {e}")
 
     # Append to reviewers list (no duplicates)
     reviewers = list(prd.reviewers or [])
