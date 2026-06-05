@@ -97,7 +97,10 @@ def _gql(query: str, variables: dict, cfg: GHConfig) -> dict:
             )
         data = resp.json()
         if "errors" in data:
-            log.error(f"GitHub GraphQL error: {data['errors']}")
+            # Log at DEBUG — some callers (owner lookup, project lookup) try
+            # multiple queries and treat one failure as a normal fallback. The
+            # caller decides whether to surface this as an error to the user.
+            log.debug(f"GitHub GraphQL error: {data['errors']}")
             raise RuntimeError(f"GitHub GraphQL error: {data['errors']}")
         return data["data"]
 
@@ -107,9 +110,11 @@ def _ensure_project(cfg: GHConfig) -> None:
     if cfg.project_id:
         return
 
-    query = """
+    # Try organization first — most SERA setups use an org-owned board.
+    # Falling through to user(login:) only if the owner isn't an org.
+    org_query = """
     query($login: String!, $number: Int!) {
-      user(login: $login) {
+      organization(login: $login) {
         projectV2(number: $number) {
           id
           fields(first: 30) {
@@ -123,18 +128,20 @@ def _ensure_project(cfg: GHConfig) -> None:
       }
     }
     """
-    org_query = query.replace("user(login:", "organization(login:")
+    user_query = org_query.replace("organization(login:", "user(login:")
 
     data = None
-    for q in [query, org_query]:
+    for q in [org_query, user_query]:
         try:
             result = _gql(q, {"login": cfg.owner, "number": cfg.project_number}, cfg)
-            owner_key = "user" if "user" in result else "organization"
+            owner_key = "organization" if "organization" in result else "user"
             project = result.get(owner_key, {}).get("projectV2")
             if project:
                 data = project
                 break
         except Exception:
+            # Expected when the owner is the other kind (org vs user) —
+            # the next iteration will try the alternative.
             continue
 
     if not data:
@@ -201,8 +208,9 @@ def cfg_for_project(user, project) -> GHConfig:
 def _resolve_owner_id(login: str, cfg: GHConfig) -> Optional[str]:
     """Return the GraphQL node ID for an org or user login.
 
-    Logs (but does not raise) the per-query failure so callers can see why
-    resolution failed (missing scope, SAML SSO, invalid login, etc.).
+    Tries `organization` first (most SERA setups are org-owned), falls back to
+    `user`. Per-query failures are logged at DEBUG to avoid noisy startup logs
+    when the owner is one kind and not the other.
     """
     last_err: Optional[str] = None
     for kind, q in [
@@ -214,10 +222,10 @@ def _resolve_owner_id(login: str, cfg: GHConfig) -> Optional[str]:
             oid = (res.get("organization") or res.get("user") or {}).get("id")
             if oid:
                 return oid
-            log.warning(f"_resolve_owner_id: {kind}({login!r}) returned no id")
+            log.debug(f"_resolve_owner_id: {kind}({login!r}) returned no id")
         except Exception as e:
             last_err = f"{kind}: {e}"
-            log.warning(f"_resolve_owner_id failed for {kind}({login!r}): {e}")
+            log.debug(f"_resolve_owner_id: {kind}({login!r}) failed: {e}")
             continue
     if last_err:
         log.error(f"_resolve_owner_id: all lookups failed for {login!r} ({last_err})")

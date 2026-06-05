@@ -73,9 +73,10 @@ def github_auth(platform: str = "web"):
     """Redirect to GitHub OAuth — platform='web' or 'mobile'."""
     params = {
         "client_id": settings.github_client_id,
-        # repo    → read/write issues, comments, and push BRD/PRD .md files
-        # project → required for createProjectV2 (org board creation)
-        "scope": "user:email read:user repo project",
+        # repo     → read/write issues, comments, and push BRD/PRD .md files
+        # project  → required for createProjectV2 (org board creation)
+        # read:org → required to resolve organization(login:).id for org-owned boards
+        "scope": "user:email read:user read:org repo project",
         "state": platform,
     }
     url = "https://github.com/login/oauth/authorize?" + urlencode(params)
