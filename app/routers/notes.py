@@ -557,26 +557,42 @@ def create_note_for_project(
     is_cr = (body.note_type or "note") == "change_request"
     note_title = _title_from_raw(body.raw_notes)
 
-    # For change requests create a fresh GitHub issue on the project board
-    cr_issue_url = None
-    cr_issue_number = None
-    cr_issue_node_id = None
-    cr_item_id = None
-    if is_cr and project.github_project_node_id:
+    # Every note (regular OR change request) gets its own GitHub issue that is
+    # attached as a SUB-ISSUE under the project's main ticket on the shared
+    # board. This makes notes/CRs/PRDs visible as a hierarchy on board #447.
+    sub_issue_url = None
+    sub_issue_number = None
+    sub_issue_node_id = None
+    sub_issue_id = None
+    sub_item_id = None
+
+    if project.github_issue_number and project.github_issue_id:
         try:
-            cfg = cfg_for_project(current_user, project)
+            cfg = cfg_for_user(current_user)
+            prefix = "[Change Request] " if is_cr else "[Note] "
+            heading = "Change Request" if is_cr else "Meeting Note"
             issue = gh.create_issue(
-                title=f"[Change Request] {note_title}",
-                body=f"**Change Request**\n\n{body.raw_notes}",
+                title=f"{prefix}{note_title}",
+                body=f"**{heading} for project [{project.title}]({project.github_issue_url})**\n\n{body.raw_notes}",
                 cfg=cfg,
             )
-            cr_issue_url = issue["url"]
-            cr_issue_number = issue["number"]
-            cr_issue_node_id = issue["node_id"]
-            cr_item_id = gh.add_to_project(issue["node_id"], cfg=cfg)
-            gh.update_project_status(cr_item_id, "Backlog", cfg=cfg)
+            sub_issue_url = issue["url"]
+            sub_issue_number = issue["number"]
+            sub_issue_node_id = issue["node_id"]
+            sub_issue_id = issue["id"]
+
+            try:
+                gh.add_sub_issue(project.github_issue_number, sub_issue_id, cfg=cfg)
+            except Exception as e:
+                log.warning(f"add_sub_issue failed for note issue #{sub_issue_number}: {e}")
+
+            try:
+                sub_item_id = gh.add_to_project(sub_issue_node_id, cfg=cfg)
+                gh.update_project_status(sub_item_id, "Backlog", cfg=cfg)
+            except Exception as e:
+                log.warning(f"Board attach failed for note issue #{sub_issue_number}: {e}")
         except Exception as e:
-            log.warning(f"Could not create CR GitHub issue: {e}")
+            log.warning(f"Could not create GitHub sub-issue for note: {e}")
 
     note = models.MeetingNote(
         creator_id=current_user.id,
@@ -587,11 +603,12 @@ def create_note_for_project(
         title=note_title,
         status="In Progress" if is_cr else "Draft",
         brd_generation_phase=0 if is_cr else None,
-        # Change requests get their own issue; regular notes share the project issue
-        github_issue_url=cr_issue_url if is_cr else project.github_issue_url,
-        github_issue_number=cr_issue_number if is_cr else project.github_issue_number,
-        github_issue_node_id=cr_issue_node_id if is_cr else project.github_issue_node_id,
-        github_project_item_id=cr_item_id if is_cr else project.github_project_item_id,
+        # Note owns its own sub-issue (falls back to project's issue if sub-issue creation failed)
+        github_issue_url=sub_issue_url or project.github_issue_url,
+        github_issue_number=sub_issue_number or project.github_issue_number,
+        github_issue_node_id=sub_issue_node_id or project.github_issue_node_id,
+        github_issue_id=sub_issue_id or project.github_issue_id,
+        github_project_item_id=sub_item_id or project.github_project_item_id,
     )
     db.add(note)
     db.flush()

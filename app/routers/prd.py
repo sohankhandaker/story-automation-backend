@@ -18,12 +18,25 @@ router = APIRouter(prefix="/api/notes", tags=["prd"])
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _get_project_issue_number(note: models.MeetingNote, db: Session) -> int | None:
-    """Return the GitHub issue number from the note's project, if any."""
+    """Return the issue number that PRD-related comments should be posted on.
+
+    Hierarchy (most specific wins):
+      1. The PRD's own sub-issue, if a PRD exists with one.
+      2. The note's own sub-issue.
+      3. The project's main ticket.
+    """
+    prd = db.query(models.PrdDocument).filter(
+        models.PrdDocument.note_id == note.id
+    ).first()
+    if prd and prd.github_issue_number:
+        return prd.github_issue_number
+    if note.github_issue_number:
+        return note.github_issue_number
     if note.project_id:
         project = db.query(models.Project).filter(models.Project.id == note.project_id).first()
         if project:
             return project.github_issue_number
-    return note.github_issue_number
+    return None
 
 
 def _build_prd_comment(note: models.MeetingNote, prd: models.PrdDocument, prd_markdown: str) -> str:
@@ -266,33 +279,71 @@ def generate_prd(
         )
 
     cfg = cfg_for_user(current_user)
-    issue_number = _get_project_issue_number(note, db)
 
-    # Post a start comment on the project issue
-    if issue_number:
+    # Pick the parent ticket: project's main issue if available, else the note's sub-issue.
+    project = (
+        db.query(models.Project).filter(models.Project.id == note.project_id).first()
+        if note.project_id else None
+    )
+    parent_issue_number = (project.github_issue_number if project else None) or note.github_issue_number
+    parent_issue_id     = (project.github_issue_id     if project else None) or note.github_issue_id
+
+    # Create a fresh sub-issue dedicated to the PRD lifecycle so PRD comments
+    # don't pollute the BRD/project ticket conversation.
+    prd_issue_url:    str | None = None
+    prd_issue_number: int | None = None
+    prd_issue_node_id: str | None = None
+    prd_issue_id:     int | None = None
+    prd_item_id:      str | None = None
+
+    try:
+        prd_issue = gh.create_issue(
+            title=f"[PRD] {note.title or 'PRD'}",
+            body=(
+                f"**Product Requirements Document for** "
+                f"[{note.title or 'note'}]({note.github_issue_url or ''})\n\n"
+                f"This sub-issue tracks PRD generation, review, and approval."
+            ),
+            cfg=cfg,
+        )
+        prd_issue_url     = prd_issue["url"]
+        prd_issue_number  = prd_issue["number"]
+        prd_issue_node_id = prd_issue["node_id"]
+        prd_issue_id      = prd_issue["id"]
+
+        if parent_issue_number and prd_issue_id:
+            try:
+                gh.add_sub_issue(parent_issue_number, prd_issue_id, cfg=cfg)
+            except Exception as e:
+                log.warning(f"PRD add_sub_issue failed: {e}")
+
+        try:
+            prd_item_id = gh.add_to_project(prd_issue_node_id, cfg=cfg)
+            gh.update_project_status(prd_item_id, "In Progress", cfg=cfg)
+        except Exception as e:
+            log.warning(f"PRD board attach failed: {e}")
+    except Exception as e:
+        log.warning(f"PRD sub-issue creation failed (will fall back to note issue): {e}")
+
+    # Post a start comment on the PRD's own sub-issue (falls back to parent if creation failed)
+    start_issue_number = prd_issue_number or parent_issue_number
+    if start_issue_number:
         try:
             gh.add_comment(
-                issue_number,
+                start_issue_number,
                 f"### PRD Generation Started\n\nGenerating Product Requirements Document from the approved BRD…",
                 cfg=cfg,
             )
         except Exception as e:
             log.warning(f"GitHub PRD start comment failed: {e}")
 
-    # Update project board status
-    item_id = note.github_project_item_id
-    if item_id:
-        try:
-            gh.update_project_status(item_id, "In Progress", cfg=cfg)
-        except Exception as e:
-            log.warning(f"Board status update failed: {e}")
-
-    # Carry the GitHub issue number onto the PRD so the polling engine can
-    # watch for reviewer comments on the same issue.
-    issue_number_for_prd = issue_number
-    issue_node_id = note.github_issue_node_id
-    project_item_id = note.github_project_item_id
-    issue_url = note.github_issue_url
+    # Carry the GitHub issue references onto the PRD so the polling engine can
+    # watch for reviewer comments on its OWN sub-issue.
+    issue_number_for_prd = prd_issue_number or parent_issue_number
+    issue_node_id        = prd_issue_node_id or note.github_issue_node_id
+    issue_url            = prd_issue_url or note.github_issue_url
+    issue_id_for_prd     = prd_issue_id or parent_issue_id
+    project_item_id      = prd_item_id or note.github_project_item_id
 
     if existing_prd:
         existing_prd.prd_draft = None
@@ -301,6 +352,7 @@ def generate_prd(
         existing_prd.current_version_number = 0
         existing_prd.github_issue_number = issue_number_for_prd
         existing_prd.github_issue_node_id = issue_node_id
+        existing_prd.github_issue_id = issue_id_for_prd
         existing_prd.github_project_item_id = project_item_id
         existing_prd.github_issue_url = issue_url
         existing_prd.github_last_checked_at = datetime.utcnow()
@@ -315,6 +367,7 @@ def generate_prd(
         status="In Progress",
         github_issue_number=issue_number_for_prd,
         github_issue_node_id=issue_node_id,
+        github_issue_id=issue_id_for_prd,
         github_project_item_id=project_item_id,
         github_issue_url=issue_url,
         github_last_checked_at=datetime.utcnow(),

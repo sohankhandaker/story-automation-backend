@@ -124,6 +124,7 @@ class Project(Base):
     github_issue_url = Column(String, nullable=True)
     github_issue_number = Column(Integer, nullable=True)
     github_issue_node_id = Column(String, nullable=True)
+    github_issue_id = Column(Integer, nullable=True)  # numeric REST id (sub_issue_id)
     github_project_item_id = Column(String, nullable=True)
     # Per-project GitHub Project board (Option B — one board per project)
     github_project_node_id = Column(String, nullable=True)   # board GraphQL ID
@@ -157,6 +158,7 @@ class MeetingNote(Base):
     github_issue_url = Column(String, nullable=True)
     github_issue_number = Column(Integer, nullable=True)
     github_issue_node_id = Column(String, nullable=True)
+    github_issue_id = Column(Integer, nullable=True)  # numeric REST id (sub_issue_id)
     github_project_item_id = Column(String, nullable=True)
     reviewer_github_username = Column(String, nullable=True)
     reviewer_name = Column(String, nullable=True)
@@ -232,6 +234,7 @@ class PrdDocument(Base):
     github_issue_url = Column(String, nullable=True)
     github_issue_number = Column(Integer, nullable=True)
     github_issue_node_id = Column(String, nullable=True)
+    github_issue_id = Column(Integer, nullable=True)  # numeric REST id (sub_issue_id)
     github_project_item_id = Column(String, nullable=True)
     reviewer_github_username = Column(String, nullable=True)
     reviewer_name = Column(String, nullable=True)

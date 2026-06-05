@@ -332,7 +332,36 @@ def create_issue(title: str, body: str, cfg: Optional[GHConfig] = None) -> dict:
         )
         resp.raise_for_status()
         data = resp.json()
-        return {"url": data["html_url"], "number": data["number"], "node_id": data["node_id"]}
+        return {
+            "url":      data["html_url"],
+            "number":   data["number"],
+            "node_id":  data["node_id"],
+            "id":       data["id"],   # numeric REST id — required as sub_issue_id
+        }
+
+
+def add_sub_issue(parent_issue_number: int, child_issue_id: int,
+                  cfg: Optional[GHConfig] = None) -> None:
+    """Attach an existing issue as a sub-issue under a parent issue.
+
+    Uses the GitHub REST sub-issues API (Issues v2). The `child_issue_id`
+    must be the numeric REST id (from create_issue()['id']), NOT the
+    issue_number and NOT the node_id.
+    """
+    cfg = cfg or _env_cfg()
+    with httpx.Client(timeout=30) as client:
+        resp = client.post(
+            f"{REST_BASE}/repos/{cfg.owner}/{cfg.repo}/issues/"
+            f"{parent_issue_number}/sub_issues",
+            json={"sub_issue_id": child_issue_id, "replace_parent": False},
+            headers=_headers(cfg),
+        )
+        if resp.status_code >= 400:
+            log.warning(
+                f"add_sub_issue failed (parent=#{parent_issue_number} "
+                f"child_id={child_issue_id}): HTTP {resp.status_code} {resp.text[:300]}"
+            )
+            resp.raise_for_status()
 
 
 def update_issue_body(issue_number: int, body: str, cfg: Optional[GHConfig] = None) -> None:

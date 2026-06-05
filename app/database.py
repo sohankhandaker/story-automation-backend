@@ -68,6 +68,10 @@ def _migrate():
         ("projects", "github_project_url", "VARCHAR"),
         ("projects", "github_status_field_id", "VARCHAR"),
         ("projects", "github_status_options", "JSON"),
+        # Sub-issues: numeric REST id required to attach as sub_issue_id
+        ("projects",       "github_issue_id", "INTEGER"),
+        ("meeting_notes",  "github_issue_id", "INTEGER"),
+        ("prd_documents",  "github_issue_id", "INTEGER"),
     ]
     is_sqlite = settings.database_url.startswith("sqlite")
     with engine.connect() as conn:

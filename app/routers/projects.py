@@ -46,60 +46,29 @@ def create_project(
     issue_title = f"[{client_name}] {body.title}"
     issue_body = _build_project_issue_body(body.title, client_name, body.short_description)
 
-    from dataclasses import replace as dc_replace
-
-    issue: dict = {"url": None, "number": None, "node_id": None}
+    issue: dict = {"url": None, "number": None, "node_id": None, "id": None}
     item_id: str | None = None
-    board_node_id: str | None = None
-    board_url: str | None = None
-    status_field_id: str | None = None
-    status_options: dict = {}
 
-    # Step 1: Create a new GitHub Project board with the same name as the SERA project.
-    # This is REQUIRED — if it fails the caller must see the actual error so they can
-    # fix scope / org approval issues. We do NOT silently swallow.
-    board_cfg = cfg
+    # Single shared board: configured via env (GITHUB_PROJECT_NUMBER, e.g. 447).
+    # We do NOT create a new board per project anymore — each project is just an
+    # issue on the shared board, and its notes/PRDs become sub-issues.
     try:
-        board = gh.create_project_board(body.title, body.short_description or "", cfg=cfg)
-        board_node_id   = board["project_id"]
-        board_url       = board["project_url"]
-        status_field_id = board["status_field_id"]
-        status_options  = board["status_options"]
-        board_cfg = dc_replace(
-            cfg,
-            project_id=board_node_id,
-            status_field_id=status_field_id,
-            status_options=status_options,
-        )
-        log.info(f"Created GitHub project board: {body.title!r} → {board_url}")
-    except Exception as e:
-        log.error(f"GitHub project board creation failed: {e}")
-        raise HTTPException(
-            status_code=502,
-            detail=f"GitHub project board could not be created: {e}",
-        )
-
-    # Step 2: Create GitHub issue with the same title as the SERA project
-    try:
-        issue = gh.create_issue(title=body.title, body=issue_body, cfg=board_cfg)
+        issue = gh.create_issue(title=issue_title, body=issue_body, cfg=cfg)
     except Exception as e:
         log.error(f"GitHub issue creation failed: {e}")
         raise HTTPException(
             status_code=502,
             detail=(
-                f"GitHub project board was created at {board_url} but issue "
-                f"creation failed: {e}. Ensure your OAuth token has 'repo' scope "
-                f"(re-login via the GitHub button)."
+                f"GitHub issue could not be created: {e}. Ensure your OAuth "
+                f"token has 'repo' scope and the OAuth app is approved for the org."
             ),
         )
 
-    # Step 3: Add issue to the new board
-    if issue.get("node_id") and board_node_id:
-        try:
-            item_id = gh.add_to_project(issue["node_id"], cfg=board_cfg)
-            gh.update_project_status(item_id, "Backlog", cfg=board_cfg)
-        except Exception as e:
-            log.warning(f"GitHub board item setup failed: {e}")
+    try:
+        item_id = gh.add_to_project(issue["node_id"], cfg=cfg)
+        gh.update_project_status(item_id, "Backlog", cfg=cfg)
+    except Exception as e:
+        log.warning(f"GitHub board item setup failed: {e}")
 
     project = models.Project(
         creator_id=current_user.id,
@@ -111,11 +80,8 @@ def create_project(
         github_issue_url=issue.get("url"),
         github_issue_number=issue.get("number"),
         github_issue_node_id=issue.get("node_id"),
+        github_issue_id=issue.get("id"),
         github_project_item_id=item_id,
-        github_project_node_id=board_node_id,
-        github_project_url=board_url,
-        github_status_field_id=status_field_id,
-        github_status_options=status_options,
     )
     db.add(project)
     db.commit()
