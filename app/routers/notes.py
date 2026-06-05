@@ -13,6 +13,7 @@ from ..services import agent
 from ..services.crawler import fetch_page_text
 from ..services.github import cfg_for_user, cfg_for_project
 from ..services import github as gh
+from ..services import engine as engine_svc
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/notes", tags=["notes"])
@@ -1144,6 +1145,29 @@ def regenerate_cr_summary(
     db.refresh(note)
 
     background_tasks.add_task(_full_cr_pipeline, note.id)
+    return _note_dict(note, db)
+
+
+# TEMPORARY: manual BRD approval for full-flow testing. Remove after testing.
+@router.post("/{note_id}/test-approve", response_model=schemas.MeetingNoteResponse)
+def test_approve_brd(
+    note_id: str,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    note = db.query(models.MeetingNote).filter(
+        models.MeetingNote.id == note_id,
+        models.MeetingNote.creator_id == current_user.id,
+    ).first()
+    if not note:
+        raise HTTPException(status_code=404, detail="Note not found")
+    if not note.brd_draft:
+        raise HTTPException(status_code=400, detail="BRD not generated yet")
+    if note.status == "Approved":
+        return _note_dict(note, db)
+
+    engine_svc.run_brd_approved(note_id)
+    db.refresh(note)
     return _note_dict(note, db)
 
 

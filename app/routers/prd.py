@@ -10,6 +10,7 @@ from ..deps import get_current_user
 from ..services import agent
 from ..services.github import cfg_for_user
 from ..services import github as gh
+from ..services import engine as engine_svc
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/notes", tags=["prd"])
@@ -526,6 +527,33 @@ def submit_prd_feedback(
     background_tasks.add_task(_update_prd, prd.id, body.feedback)
     return prd
 
+
+# TEMPORARY: manual PRD approval for full-flow testing. Remove after testing.
+@router.post("/{note_id}/prd/test-approve", response_model=schemas.PrdResponse)
+def test_approve_prd(
+    note_id: str,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    note = db.query(models.MeetingNote).filter(
+        models.MeetingNote.id == note_id,
+        models.MeetingNote.creator_id == current_user.id,
+    ).first()
+    if not note:
+        raise HTTPException(status_code=404, detail="Note not found")
+    prd = db.query(models.PrdDocument).filter(
+        models.PrdDocument.note_id == note_id
+    ).first()
+    if not prd:
+        raise HTTPException(status_code=404, detail="PRD not found")
+    if not prd.prd_draft:
+        raise HTTPException(status_code=400, detail="PRD not generated yet")
+    if prd.status == "Approved":
+        return prd
+
+    engine_svc.run_prd_approved(prd.id)
+    db.refresh(prd)
+    return prd
 
 @router.post("/{note_id}/prd/send-to-planner", response_model=schemas.PrdResponse)
 def send_prd_to_planner(
