@@ -106,6 +106,28 @@ def _build_brd_comment(note: models.MeetingNote, brd_markdown: str) -> str:
 
 # ── Background tasks ──────────────────────────────────────────────────────────
 
+def _safe_add_comment(issue_number: int, body: str, primary_cfg) -> bool:
+    """Post a comment, retrying with the server PAT if the primary token 403s.
+
+    User PATs frequently lack issues:write on the project's repo, which would
+    otherwise silently swallow every BRD/PRD progress comment.
+    """
+    try:
+        gh.add_comment(issue_number, body, cfg=primary_cfg)
+        return True
+    except Exception as e:
+        fallback = gh._env_cfg()
+        if fallback.token and fallback.token != primary_cfg.token:
+            try:
+                gh.add_comment(issue_number, body, cfg=fallback)
+                return True
+            except Exception as e2:
+                log.warning(f"add_comment failed for #{issue_number} (both tokens): user={e} pat={e2}")
+        else:
+            log.warning(f"add_comment failed for #{issue_number}: {e}")
+    return False
+
+
 def _full_brd_pipeline(note_id: str):
     """
     Full pipeline triggered by Mark as Ready:
@@ -123,7 +145,13 @@ def _full_brd_pipeline(note_id: str):
             return
 
         creator = db.query(models.User).filter(models.User.id == note.creator_id).first()
-        cfg = cfg_for_user(creator)
+        # Use project-scoped cfg so we're aimed at the project's repo/board.
+        # Comment posts fall back to the server PAT inside _safe_add_comment.
+        _proj_for_cfg = (
+            db.query(models.Project).filter(models.Project.id == note.project_id).first()
+            if note.project_id else None
+        )
+        cfg = cfg_for_project(creator, _proj_for_cfg) if _proj_for_cfg else cfg_for_user(creator)
 
         issue_number = _get_project_issue_number(note, db)
         combined = _combined_notes(note)
@@ -213,7 +241,7 @@ def _full_brd_pipeline(note_id: str):
                 )
                 if len(analysis_comment) > 60000:
                     analysis_comment = analysis_comment[:60000] + "\n\n_(truncated)_"
-                gh.add_comment(issue_number, analysis_comment, cfg=cfg)
+                _safe_add_comment(issue_number, analysis_comment, cfg)
             except Exception as e:
                 log.warning(f"GitHub analysis comment failed: {e}")
 
@@ -258,12 +286,24 @@ def _full_brd_pipeline(note_id: str):
         safe_title = re.sub(r'[^\w\s\-]', '', note.title or 'BRD').strip().replace(' ', '_')
         file_path = f"brd/{safe_title}_{note.id[:8]}.md"
         try:
-            file_info = gh.push_file(
-                path=file_path,
-                content=result["brd_markdown"],
-                commit_message=f"docs(brd): add BRD for {note.title or note.id[:8]}",
-                cfg=cfg,
-            )
+            try:
+                file_info = gh.push_file(
+                    path=file_path,
+                    content=result["brd_markdown"],
+                    commit_message=f"docs(brd): add BRD for {note.title or note.id[:8]}",
+                    cfg=cfg,
+                )
+            except Exception as e:
+                fallback = gh._env_cfg()
+                if fallback.token and fallback.token != cfg.token:
+                    file_info = gh.push_file(
+                        path=file_path,
+                        content=result["brd_markdown"],
+                        commit_message=f"docs(brd): add BRD for {note.title or note.id[:8]}",
+                        cfg=fallback,
+                    )
+                else:
+                    raise
             note.github_file_url = file_info["html_url"]
             note.github_file_raw_url = file_info["raw_url"]
             db.commit()
@@ -273,19 +313,16 @@ def _full_brd_pipeline(note_id: str):
 
         # Post full BRD as a comment (includes download link if file was pushed)
         if issue_number:
-            try:
-                gh.add_comment(
-                    issue_number,
-                    _build_brd_comment(note, result["brd_markdown"]),
-                    cfg=cfg,
-                )
-                gh.add_comment(
-                    issue_number,
-                    "BRD generation complete!\n\nThe full Business Requirements Document is in the comment above.\n\nThe creator will assign a reviewer shortly.",
-                    cfg=cfg,
-                )
-            except Exception as e:
-                log.warning(f"GitHub BRD comment failed: {e}")
+            _safe_add_comment(
+                issue_number,
+                _build_brd_comment(note, result["brd_markdown"]),
+                cfg,
+            )
+            _safe_add_comment(
+                issue_number,
+                "BRD generation complete!\n\nThe full Business Requirements Document is in the comment above.\n\nThe creator will assign a reviewer shortly.",
+                cfg,
+            )
 
         # Move the parent project's board card to In Review when BRD is ready.
         # (Notes are sub-issues and don't have their own board cards.)
@@ -369,10 +406,10 @@ def _full_cr_pipeline(note_id: str):
                     models.Project.id == note.project_id
                 ).first() if note.project_id else None
                 cfg = cfg_for_project(creator, project) if project else cfg_for_user(creator)
-                gh.add_comment(
+                _safe_add_comment(
                     note.github_issue_number,
                     f"### CR Summary Generated\n\n{summary[:1500]}{'…' if len(summary) > 1500 else ''}",
-                    cfg=cfg,
+                    cfg,
                 )
             except Exception as e:
                 log.warning(f"CR GitHub comment failed: {e}")
@@ -543,7 +580,7 @@ def _update_brd(note_id: str, feedback: str):
                     f"{reviewer} — please review the updated BRD above. "
                     f"Reply **`APPROVED`** to approve, or leave further feedback."
                 )
-                gh.add_comment(issue_number, update_comment, cfg=cfg)
+                _safe_add_comment(issue_number, update_comment, cfg)
             except Exception as e:
                 log.warning(f"GitHub update comment failed after BRD feedback: {e}")
 
