@@ -89,7 +89,20 @@ def _full_prd_pipeline(prd_id: str):
             except Exception as e:
                 log.warning(f"PRD phase callback commit failed: {e}")
 
-        result = agent.generate_prd_from_brd(note.brd_draft, phase_callback=_phase_cb)
+        # Pre-analysis: extract structured engineering context from the BRD
+        # (mirrors analyze_notes_to_draft used in BRD pipeline)
+        brd_analysis = ""
+        try:
+            log.info(f"PRD pipeline: running BRD pre-analysis for prd_id={prd_id}")
+            brd_analysis = agent.analyze_brd_for_prd(note.brd_draft)
+        except Exception as e:
+            log.warning(f"BRD pre-analysis failed (continuing without it): {e}")
+
+        result = agent.generate_prd_from_brd(
+            note.brd_draft,
+            brd_analysis=brd_analysis,
+            phase_callback=_phase_cb,
+        )
 
         v1 = models.PrdVersion(
             prd_id=prd.id,
@@ -171,6 +184,7 @@ def _update_prd(prd_id: str, feedback: str):
         result = agent.update_prd_from_feedback(
             prd_content=prd.prd_draft,
             feedback=feedback,
+            brd_content=note.brd_draft if note and note.brd_draft else "",
         )
 
         next_ver = (prd.current_version_number or 1) + 1

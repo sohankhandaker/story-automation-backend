@@ -481,6 +481,7 @@ def _update_brd(note_id: str, feedback: str):
         result = agent.update_brd_from_feedback(
             current_brd=note.brd_draft,
             reviewer_comments=[feedback],
+            raw_notes=note.raw_notes[:2000] if note.raw_notes else "",
         )
 
         next_ver = (note.current_version_number or 1) + 1

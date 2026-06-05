@@ -747,19 +747,21 @@ def _merge_section_updates(original: str, updates: str) -> str:
 def update_brd_from_feedback(
     current_brd: str,
     reviewer_comments: list[str],
+    raw_notes: str = "",
 ) -> dict:
     """Update BRD sections based on reviewer feedback.
-    Returns {updated_markdown, change_summary, changed_sections}.
-
-    Uses a surgical approach: the model outputs ONLY the changed sections,
-    then Python merges them back into the full document — avoiding token-limit
-    truncation that would silently drop unchanged sections."""
+    raw_notes — original meeting notes as lightweight context hint (pass "" if unavailable).
+    Returns {updated_markdown, change_summary, changed_sections}."""
     comments_text = "\n".join(f"- {c}" for c in reviewer_comments)
+    notes_block = (
+        f"\n**Original Meeting Notes (context — use to stay aligned with source intent):**\n---\n{raw_notes[:2000]}\n---\n"
+        if raw_notes else ""
+    )
     prompt = f"""You are a senior business analyst updating a Business Requirements Document (BRD).
 
 Reviewer Feedback:
 {comments_text}
-
+{notes_block}
 Current BRD:
 {current_brd}
 
@@ -817,10 +819,15 @@ Extract real details from the BRD; infer reasonable values for gaps; keep all re
 Return ONLY the markdown section content — no preamble, no "Here is..." commentary."""
 
 
-def _prd_phase_prompt(phase_num: int, phase_name: str, brd_content: str, prior_prd: str) -> str:
+def _prd_phase_prompt(phase_num: int, phase_name: str, brd_content: str, prior_prd: str,
+                      brd_analysis: str = "") -> str:
     prior_block = (
         f"\n**Previously generated PRD content (for consistency):**\n---\n{prior_prd[-3000:]}\n---\n"
         if prior_prd else ""
+    )
+    analysis_block = (
+        f"\n**BRD Analysis (structured engineering context — use this alongside the BRD):**\n---\n{brd_analysis[:3000]}\n---\n"
+        if brd_analysis else ""
     )
 
     from datetime import date
@@ -1186,16 +1193,57 @@ Group stories by Epic. For each Epic:
 
 **Approved BRD Content (primary input — extract all details from this):**
 ---
-{brd_content[:6000]}
+{brd_content[:10000]}
 ---
-{prior_block}
+{analysis_block}{prior_block}
 **Phase {phase_num}/{total} — {phase_name}**
 
 {instructions[phase_num]}"""
 
 
-def generate_prd_from_brd(brd_content: str, phase_callback=None) -> dict:
+def analyze_brd_for_prd(brd_content: str) -> str:
+    """Pre-analysis pass: extract a compact engineering context document from the approved BRD.
+    This mirrors analyze_notes_to_draft() used in the BRD pipeline and gives every PRD phase
+    a dense, structured summary instead of relying on raw BRD truncation alone."""
+    prompt = f"""You are a senior product manager preparing to generate a Product Requirements Document (PRD).
+
+Analyse the approved Business Requirements Document (BRD) below and produce a compact engineering context document.
+
+**Approved BRD:**
+---
+{brd_content[:8000]}
+---
+
+Output the following sections (be concise — this is a reference summary, not the PRD itself):
+
+## Core Product Goals
+Numbered list of 5–8 specific, measurable goals extracted from the BRD.
+
+## Non-Goals (Explicit Exclusions)
+Bullet list of what the product explicitly will NOT do.
+
+## Key Stakeholder Roles
+Table: Role | Responsibilities | Key Needs (5–8 roles)
+
+## MVP Scope Summary
+Bullet list of the must-have features/modules for the first release.
+
+## Technical Constraints & Integrations
+Bullet list of platforms, external systems, compliance requirements, and technical decisions.
+
+## Critical Business Rules
+Numbered list of 8–12 non-obvious rules that must be reflected in the PRD (e.g. permissions, data lifecycle, pricing logic).
+
+## Open Engineering Questions
+Bullet list of ambiguities or gaps in the BRD that the PRD should resolve or flag for the engineering team.
+
+Return ONLY the markdown sections above. No preamble."""
+    return _chat(prompt, max_tokens=3000)
+
+
+def generate_prd_from_brd(brd_content: str, brd_analysis: str = "", phase_callback=None) -> dict:
     """Generate PRD phase by phase from an approved BRD.
+    brd_analysis — pre-computed analysis from analyze_brd_for_prd() (pass "" to skip).
     phase_callback(phase_num, total) is called after each phase completes.
     Returns {phases: [...], full_prd: str}."""
     total = len(PRD_PHASES)
@@ -1204,14 +1252,14 @@ def generate_prd_from_brd(brd_content: str, phase_callback=None) -> dict:
 
     for phase_num, phase_name in PRD_PHASES:
         log.info(f"PRD phase {phase_num}/{total}: {phase_name}")
-        # Update phase BEFORE the API call — same fix as BRD.
         if phase_callback:
             try:
                 phase_callback(phase_num, total)
             except Exception:
                 pass
         try:
-            prompt = _prd_phase_prompt(phase_num, phase_name, brd_content, accumulated)
+            prompt = _prd_phase_prompt(phase_num, phase_name, brd_content, accumulated,
+                                       brd_analysis=brd_analysis)
             content = _chat(prompt, max_tokens=4000)
             sections.append(content)
             accumulated += "\n\n" + content
@@ -1223,20 +1271,24 @@ def generate_prd_from_brd(brd_content: str, phase_callback=None) -> dict:
     return {"phases": sections, "full_prd": full_prd}
 
 
-def update_prd_from_feedback(prd_content: str, feedback: str) -> dict:
+def update_prd_from_feedback(prd_content: str, feedback: str, brd_content: str = "") -> dict:
     """Update PRD based on reviewer feedback.
-    Returns {updated_prd, change_summary, changed_sections}.
-
-    Uses the same surgical section-merge approach as update_brd_from_feedback."""
+    brd_content — the approved BRD for alignment checking (pass "" if unavailable).
+    Returns {updated_prd, change_summary, changed_sections}."""
+    brd_block = (
+        f"\n**Approved BRD (reference for alignment — do not contradict it):**\n---\n{brd_content[:4000]}\n---\n"
+        if brd_content else ""
+    )
     prompt = f"""You are a senior product manager updating a Product Requirements Document (PRD).
 
 Feedback:
 {feedback}
-
+{brd_block}
 Current PRD:
 {prd_content}
 
 IMPORTANT: Output ONLY the sections that need to change — do NOT repeat unchanged sections.
+Ensure all changes remain aligned with the approved BRD above.
 Each changed section must start with its exact heading (##, ###, etc.) as it appears above.
 
 Respond EXACTLY in this format:
