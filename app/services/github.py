@@ -88,9 +88,16 @@ def _gql(query: str, variables: dict, cfg: GHConfig) -> dict:
             json={"query": query, "variables": variables},
             headers={"Authorization": f"Bearer {cfg.token}"},
         )
-        resp.raise_for_status()
+        # Surface HTTP-level errors (401/403/etc.) with body so caller can see
+        # missing scopes or SAML/SSO enforcement messages from GitHub.
+        if resp.status_code >= 400:
+            log.error(f"GitHub GraphQL HTTP {resp.status_code}: {resp.text[:500]}")
+            raise RuntimeError(
+                f"GitHub GraphQL HTTP {resp.status_code}: {resp.text[:300]}"
+            )
         data = resp.json()
         if "errors" in data:
+            log.error(f"GitHub GraphQL error: {data['errors']}")
             raise RuntimeError(f"GitHub GraphQL error: {data['errors']}")
         return data["data"]
 
@@ -192,18 +199,28 @@ def cfg_for_project(user, project) -> GHConfig:
 # ── Create a new GitHub Project v2 board ──────────────────────────────────────
 
 def _resolve_owner_id(login: str, cfg: GHConfig) -> Optional[str]:
-    """Return the GraphQL node ID for an org or user login."""
-    for q in [
-        "query($l:String!){organization(login:$l){id}}",
-        "query($l:String!){user(login:$l){id}}",
+    """Return the GraphQL node ID for an org or user login.
+
+    Logs (but does not raise) the per-query failure so callers can see why
+    resolution failed (missing scope, SAML SSO, invalid login, etc.).
+    """
+    last_err: Optional[str] = None
+    for kind, q in [
+        ("organization", "query($l:String!){organization(login:$l){id}}"),
+        ("user",         "query($l:String!){user(login:$l){id}}"),
     ]:
         try:
             res = _gql(q, {"l": login}, cfg)
             oid = (res.get("organization") or res.get("user") or {}).get("id")
             if oid:
                 return oid
-        except Exception:
+            log.warning(f"_resolve_owner_id: {kind}({login!r}) returned no id")
+        except Exception as e:
+            last_err = f"{kind}: {e}"
+            log.warning(f"_resolve_owner_id failed for {kind}({login!r}): {e}")
             continue
+    if last_err:
+        log.error(f"_resolve_owner_id: all lookups failed for {login!r} ({last_err})")
     return None
 
 
@@ -257,13 +274,40 @@ def _do_create_project_v2(owner_id: str, title: str, cfg: GHConfig) -> dict:
 def create_project_board(title: str, description: str, cfg: GHConfig) -> dict:
     """
     Create a new GitHub Project v2 board under the configured org owner.
-    Requires the OAuth token to have 'project' scope (re-login after scope change).
+    Requires the OAuth token to have 'project' scope AND, for org-owned boards,
+    the OAuth app must be approved by the org (Settings → Third-party Access).
     """
+    if not cfg.token:
+        raise RuntimeError(
+            "No GitHub token configured. Sign in via GitHub OAuth (Settings → Connect GitHub)."
+        )
+    if not cfg.owner:
+        raise RuntimeError("No GitHub owner (org/user login) configured.")
+
     owner_id = _resolve_owner_id(cfg.owner, cfg)
     if not owner_id:
-        raise RuntimeError(f"Cannot resolve GitHub owner node ID for {cfg.owner!r}")
+        raise RuntimeError(
+            f"Cannot resolve GitHub owner node ID for {cfg.owner!r}. "
+            f"Check that the org exists and that your OAuth token has access "
+            f"(re-login with the GitHub button to refresh scopes)."
+        )
 
-    result = _do_create_project_v2(owner_id, title, cfg)
+    try:
+        result = _do_create_project_v2(owner_id, title, cfg)
+    except Exception as e:
+        msg = str(e)
+        hint = ""
+        if "insufficient" in msg.lower() or "scope" in msg.lower() or "forbidden" in msg.lower() or "403" in msg:
+            hint = (
+                " — Your OAuth token is missing 'project' scope, OR the GitHub OAuth app "
+                f"is not approved for org {cfg.owner!r}. "
+                f"Go to https://github.com/organizations/{cfg.owner}/settings/oauth_application_policy "
+                "to grant access, then re-login."
+            )
+        elif "saml" in msg.lower():
+            hint = " — The org enforces SAML SSO. Authorize your OAuth token for the org in GitHub Settings → Applications."
+        raise RuntimeError(f"createProjectV2 failed for owner={cfg.owner!r}: {msg}{hint}") from e
+
     log.info(f"Created GitHub project board {title!r}: {result['project_url']}")
     return result
 

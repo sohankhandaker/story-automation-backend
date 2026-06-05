@@ -21,7 +21,7 @@ def _build_project_issue_body(title: str, client_name: str, short_description: s
         f"---\n\n"
         f"All Business Requirements and Product documents for this project are tracked "
         f"as comments below.\n\n"
-        f"*Managed by Story Automation*"
+        f"*Managed by SERA*"
     )
 
 
@@ -55,7 +55,9 @@ def create_project(
     status_field_id: str | None = None
     status_options: dict = {}
 
-    # Step 1: Create a new GitHub Project board with the same name as the SERA project
+    # Step 1: Create a new GitHub Project board with the same name as the SERA project.
+    # This is REQUIRED — if it fails the caller must see the actual error so they can
+    # fix scope / org approval issues. We do NOT silently swallow.
     board_cfg = cfg
     try:
         board = gh.create_project_board(body.title, body.short_description or "", cfg=cfg)
@@ -71,13 +73,25 @@ def create_project(
         )
         log.info(f"Created GitHub project board: {body.title!r} → {board_url}")
     except Exception as e:
-        log.warning(f"GitHub project board creation failed: {e}")
+        log.error(f"GitHub project board creation failed: {e}")
+        raise HTTPException(
+            status_code=502,
+            detail=f"GitHub project board could not be created: {e}",
+        )
 
     # Step 2: Create GitHub issue with the same title as the SERA project
     try:
         issue = gh.create_issue(title=body.title, body=issue_body, cfg=board_cfg)
     except Exception as e:
-        log.warning(f"GitHub issue creation failed: {e}")
+        log.error(f"GitHub issue creation failed: {e}")
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"GitHub project board was created at {board_url} but issue "
+                f"creation failed: {e}. Ensure your OAuth token has 'repo' scope "
+                f"(re-login via the GitHub button)."
+            ),
+        )
 
     # Step 3: Add issue to the new board
     if issue.get("node_id") and board_node_id:
