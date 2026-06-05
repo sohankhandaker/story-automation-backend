@@ -318,11 +318,8 @@ def generate_prd(
             except Exception as e:
                 log.warning(f"PRD add_sub_issue failed: {e}")
 
-        try:
-            prd_item_id = gh.add_to_project(prd_issue_node_id, cfg=cfg)
-            gh.update_project_status(prd_item_id, "In Progress", cfg=cfg)
-        except Exception as e:
-            log.warning(f"PRD board attach failed: {e}")
+        # Note: do NOT add the PRD sub-issue to the project board. It lives only
+        # inside the parent project issue (as a sub-issue), not as a separate card.
     except Exception as e:
         log.warning(f"PRD sub-issue creation failed (will fall back to note issue): {e}")
 

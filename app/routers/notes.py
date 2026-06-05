@@ -579,7 +579,6 @@ def create_note_for_project(
     sub_issue_number = None
     sub_issue_node_id = None
     sub_issue_id = None
-    sub_item_id = None
 
     if project.github_issue_number and project.github_issue_id:
         try:
@@ -614,11 +613,9 @@ def create_note_for_project(
             except Exception as e:
                 log.warning(f"add_sub_issue failed for note issue #{sub_issue_number}: {e}")
 
-            try:
-                sub_item_id = gh.add_to_project(sub_issue_node_id, cfg=cfg)
-                gh.update_project_status(sub_item_id, "Draft", cfg=cfg)
-            except Exception as e:
-                log.warning(f"Board attach failed for note issue #{sub_issue_number}: {e}")
+            # Note: do NOT add the sub-issue to the project board. We want it to
+            # live only inside the parent project issue (as a sub-issue), not
+            # appear as a separate card on the board.
         except Exception as e:
             log.warning(f"Could not create GitHub sub-issue for note: {e}")
 
@@ -636,7 +633,7 @@ def create_note_for_project(
         github_issue_number=sub_issue_number or project.github_issue_number,
         github_issue_node_id=sub_issue_node_id or project.github_issue_node_id,
         github_issue_id=sub_issue_id or project.github_issue_id,
-        github_project_item_id=sub_item_id or project.github_project_item_id,
+        github_project_item_id=None,
     )
     db.add(note)
     db.flush()
