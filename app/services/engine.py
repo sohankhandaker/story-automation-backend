@@ -20,6 +20,26 @@ from . import agent, email_service
 
 log = logging.getLogger(__name__)
 
+
+def _safe_add_comment(issue_number: int, body: str, primary_cfg) -> bool:
+    """Post a comment, retrying with the server PAT if the primary token 403s.
+    User PATs frequently lack issues:write on the project's repo."""
+    try:
+        gh.add_comment(issue_number, body, cfg=primary_cfg)
+        return True
+    except Exception as e:
+        fallback = gh._env_cfg()
+        if fallback.token and fallback.token != primary_cfg.token:
+            try:
+                gh.add_comment(issue_number, body, cfg=fallback)
+                return True
+            except Exception as e2:
+                log.warning(f"_safe_add_comment fallback also failed: {e2}")
+        else:
+            log.warning(f"_safe_add_comment failed (no usable fallback): {e}")
+        return False
+
+
 scheduler = BackgroundScheduler()
 
 # Keywords that count as reviewer approval (case-insensitive substring match)
@@ -917,20 +937,31 @@ def run_brd_approved(note_id: str):
         note.status = "Approved"
         db.commit()
 
-        # Move the note's sub-issue to Done on the board
-        if note.github_project_item_id:
+        # Move the project's board card to Done (notes inherit project's card)
+        project_item_id = (project.github_project_item_id if project else None) or note.github_project_item_id
+        if project_item_id:
             try:
-                gh.update_project_status(note.github_project_item_id, "Done", cfg=cfg)
+                gh.update_project_status(project_item_id, "Done", cfg=cfg)
             except Exception as e:
-                log.warning(f"GitHub board status update failed: {e}")
+                if "403" in str(e) or "FORBIDDEN" in str(e).upper():
+                    fallback = gh._env_cfg()
+                    if fallback.token and fallback.token != cfg.token:
+                        try:
+                            gh.update_project_status(project_item_id, "Done", cfg=fallback)
+                        except Exception as e2:
+                            log.warning(f"GitHub board status update fallback failed: {e2}")
+                    else:
+                        log.warning(f"GitHub board status update failed: {e}")
+                else:
+                    log.warning(f"GitHub board status update failed: {e}")
 
         reviewer = note.reviewer_name or note.reviewer_github_username or "the reviewer"
         if note.github_issue_number:
-            gh.add_comment(
+            _safe_add_comment(
                 note.github_issue_number,
                 f"✅ BRD approved by {reviewer}!\n\n"
                 f"The BRD is now **Done**. The creator can proceed to PRD generation.",
-                cfg=cfg,
+                cfg,
             )
 
         log.info(f"BRD note {note_id} approved by {reviewer}")
