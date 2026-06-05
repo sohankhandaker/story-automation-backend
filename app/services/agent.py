@@ -230,8 +230,11 @@ Start with:
 ### 1.1 Version History
 | Version | Date | Author | Description |
 |---|---:|---|---|
-| 0.1 | [date] | [author] | Initial BRD draft |
-| 1.0 | [date] | [author] | Complete BRD with all sections |
+| 0.1 | [today] | [author name from notes — never write "TBD"] | Initial BRD draft for [extract product/project context], with [pilot/initial use case if mentioned] |
+| 0.2 | [today] | [same author] | Delivery-ready BRD with structured requirements, modules, flows, MVP scope, and acceptance criteria |
+| 1.0 | [today] | [same author] | Final international-standard BRD with governance, capability mapping, KPIs, adoption, fallback operations, compliance, and AI-readable interpretation guidance |
+
+IMPORTANT: Each Description must be a full descriptive sentence specific to THIS product — not a generic placeholder. Mention the actual product domain, use case, or scope in each row. Use the author name extracted from the notes; if absolutely none is available, infer a plausible BA name from project context rather than writing "TBD".
 
 ### 1.2 Reviewers and Approvers
 | Name | Role / Organization | Responsibility | Status |

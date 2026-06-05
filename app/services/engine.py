@@ -943,15 +943,12 @@ def run_brd_approved(note_id: str):
             try:
                 gh.update_project_status(project_item_id, "Done", cfg=cfg)
             except Exception as e:
-                if "403" in str(e) or "FORBIDDEN" in str(e).upper():
-                    fallback = gh._env_cfg()
-                    if fallback.token and fallback.token != cfg.token:
-                        try:
-                            gh.update_project_status(project_item_id, "Done", cfg=fallback)
-                        except Exception as e2:
-                            log.warning(f"GitHub board status update fallback failed: {e2}")
-                    else:
-                        log.warning(f"GitHub board status update failed: {e}")
+                fallback = gh._env_cfg()
+                if fallback.token and fallback.token != cfg.token:
+                    try:
+                        gh.update_project_status(project_item_id, "Done", cfg=fallback)
+                    except Exception as e2:
+                        log.warning(f"GitHub board status update failed (primary: {e}; fallback: {e2})")
                 else:
                     log.warning(f"GitHub board status update failed: {e}")
 
