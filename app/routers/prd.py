@@ -281,67 +281,49 @@ def generate_prd(
 
     cfg = cfg_for_user(current_user)
 
-    # Pick the parent ticket: project's main issue if available, else the note's sub-issue.
+    # Architecture: one project = one GitHub ticket. PRD generation, comments,
+    # Q&A, and the download link all live on the project's main issue — no
+    # PRD sub-issue.
     project = (
         db.query(models.Project).filter(models.Project.id == note.project_id).first()
         if note.project_id else None
     )
     parent_issue_number = (project.github_issue_number if project else None) or note.github_issue_number
     parent_issue_id     = (project.github_issue_id     if project else None) or note.github_issue_id
+    parent_issue_node_id = (project.github_issue_node_id if project else None) or note.github_issue_node_id
+    parent_issue_url    = (project.github_issue_url    if project else None) or note.github_issue_url
 
-    # Create a fresh sub-issue dedicated to the PRD lifecycle so PRD comments
-    # don't pollute the BRD/project ticket conversation.
-    prd_issue_url:    str | None = None
-    prd_issue_number: int | None = None
-    prd_issue_node_id: str | None = None
-    prd_issue_id:     int | None = None
-    prd_item_id:      str | None = None
-
-    try:
-        prd_issue = gh.create_issue(
-            title=f"[PRD] {note.title or 'PRD'}",
-            body=(
-                f"**Product Requirements Document for** "
-                f"[{note.title or 'note'}]({note.github_issue_url or ''})\n\n"
-                f"This sub-issue tracks PRD generation, review, and approval."
-            ),
-            cfg=cfg,
-        )
-        prd_issue_url     = prd_issue["url"]
-        prd_issue_number  = prd_issue["number"]
-        prd_issue_node_id = prd_issue["node_id"]
-        prd_issue_id      = prd_issue["id"]
-
-        if parent_issue_number and prd_issue_id:
-            try:
-                gh.add_sub_issue(parent_issue_number, prd_issue_id, cfg=cfg)
-            except Exception as e:
-                log.warning(f"PRD add_sub_issue failed: {e}")
-
-        # Note: do NOT add the PRD sub-issue to the project board. It lives only
-        # inside the parent project issue (as a sub-issue), not as a separate card.
-    except Exception as e:
-        log.warning(f"PRD sub-issue creation failed (will fall back to note issue): {e}")
-
-    # Post a start comment on the PRD's own sub-issue (falls back to parent if creation failed)
-    start_issue_number = prd_issue_number or parent_issue_number
-    if start_issue_number:
+    if parent_issue_number:
         try:
-            gh.add_comment(
-                start_issue_number,
-                f"### PRD Generation Started\n\nGenerating Product Requirements Document from the approved BRD…",
-                cfg=cfg,
-            )
+            comment_cfg = cfg_for_project(current_user, project) if project else cfg
+            try:
+                gh.add_comment(
+                    parent_issue_number,
+                    f"### PRD Generation Started\n\nGenerating Product Requirements Document from the approved BRD…",
+                    cfg=comment_cfg,
+                )
+            except Exception as e:
+                if "403" in str(e):
+                    fallback = gh._env_cfg()
+                    if fallback.token and fallback.token != comment_cfg.token:
+                        gh.add_comment(
+                            parent_issue_number,
+                            f"### PRD Generation Started\n\nGenerating Product Requirements Document from the approved BRD…",
+                            cfg=fallback,
+                        )
+                    else:
+                        raise
+                else:
+                    raise
         except Exception as e:
             log.warning(f"GitHub PRD start comment failed: {e}")
 
-    # Carry the GitHub issue references onto the PRD so the polling engine can
-    # watch for reviewer comments on its OWN sub-issue.
-    issue_number_for_prd = prd_issue_number or parent_issue_number
-    issue_node_id        = prd_issue_node_id or note.github_issue_node_id
-    issue_url            = prd_issue_url or note.github_issue_url
-    issue_id_for_prd     = prd_issue_id or parent_issue_id
-    project_item_id      = prd_item_id or note.github_project_item_id
+    # PRD shares the project's issue (no PRD sub-issue).
+    issue_number_for_prd = parent_issue_number
+    issue_node_id        = parent_issue_node_id
+    issue_url            = parent_issue_url
+    issue_id_for_prd     = parent_issue_id
+    project_item_id      = None
 
     if existing_prd:
         existing_prd.prd_draft = None

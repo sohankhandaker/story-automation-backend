@@ -81,18 +81,13 @@ def _combined_notes(note: models.MeetingNote) -> str:
 
 
 def _get_project_issue_number(note: models.MeetingNote, db: Session) -> int | None:
-    """Return the GitHub issue number to use for comments on this note.
-
-    Prefers the note's own sub-issue number so each note has its own
-    discussion thread. Falls back to the project's main issue only when
-    the note was created before sub-issues existed.
-    """
-    if note.github_issue_number:
-        return note.github_issue_number
-    if not note.project_id:
-        return None
-    project = db.query(models.Project).filter(models.Project.id == note.project_id).first()
-    return project.github_issue_number if project else None
+    """Return the project's GitHub issue number — the single ticket where
+    all notes, CRs, BRD/PRD comments and Q&A for this project live."""
+    if note.project_id:
+        project = db.query(models.Project).filter(models.Project.id == note.project_id).first()
+        if project and project.github_issue_number:
+            return project.github_issue_number
+    return note.github_issue_number
 
 
 def _build_brd_comment(note: models.MeetingNote, brd_markdown: str) -> str:
@@ -586,57 +581,31 @@ def create_note_for_project(
     is_cr = (body.note_type or "note") == "change_request"
     note_title = _title_from_raw(body.raw_notes)
 
-    # Every note (regular OR change request) gets its own GitHub issue that is
-    # attached as a SUB-ISSUE under the project's main ticket on the shared
-    # board. This makes notes/CRs/PRDs visible as a hierarchy on board #447.
-    sub_issue_url = None
-    sub_issue_number = None
-    sub_issue_node_id = None
-    sub_issue_id = None
-
-    if project.github_issue_number and project.github_issue_id:
+    # Architecture: one project = one GitHub ticket. Notes, CRs, BRD, PRD,
+    # questions/answers and download links all live as comments on the
+    # project's main issue — no sub-issues.
+    if project.github_issue_number:
         try:
-            cfg = cfg_for_user(current_user)
-            prefix = "[Change Request] " if is_cr else "[Note] "
+            cfg = cfg_for_project(current_user, project)
             heading = "Change Request" if is_cr else "Meeting Note"
-            issue_body_text = f"**{heading} for project [{project.title}]({project.github_issue_url})**\n\n{body.raw_notes}"
+            comment_body = (
+                f"### {heading}: {note_title}\n\n"
+                f"{body.raw_notes}"
+            )
             try:
-                issue = gh.create_issue(
-                    title=f"{prefix}{note_title}",
-                    body=issue_body_text,
-                    cfg=cfg,
-                )
+                gh.add_comment(project.github_issue_number, comment_body, cfg=cfg)
             except Exception as e:
                 if "403" in str(e):
                     fallback = gh._env_cfg()
                     if fallback.token and fallback.token != cfg.token:
-                        log.info("Note issue 403 — retrying with server PAT")
-                        issue = gh.create_issue(title=f"{prefix}{note_title}", body=issue_body_text, cfg=fallback)
-                        cfg = fallback
+                        log.info("Note comment 403 — retrying with server PAT")
+                        gh.add_comment(project.github_issue_number, comment_body, cfg=fallback)
                     else:
                         raise
                 else:
                     raise
-            sub_issue_url = issue["url"]
-            sub_issue_number = issue["number"]
-            sub_issue_node_id = issue["node_id"]
-            sub_issue_id = issue["id"]
-
-            try:
-                gh.add_sub_issue(project.github_issue_number, sub_issue_id, cfg=cfg)
-            except Exception as e:
-                log.warning(f"add_sub_issue failed for note issue #{sub_issue_number}: {e}")
-
-            # GitHub Projects v2 auto-inherits the parent's board membership
-            # onto sub-issues, so the new note issue would show up as its own
-            # card. Remove it so the sub-issue lives only under the parent.
-            try:
-                project_cfg = cfg_for_project(current_user, project)
-                gh.remove_issue_from_project(sub_issue_node_id, cfg=project_cfg)
-            except Exception as e:
-                log.warning(f"remove_issue_from_project failed for note issue #{sub_issue_number}: {e}")
         except Exception as e:
-            log.warning(f"Could not create GitHub sub-issue for note: {e}")
+            log.warning(f"Could not post note as comment on project issue: {e}")
 
     note = models.MeetingNote(
         creator_id=current_user.id,
@@ -647,11 +616,11 @@ def create_note_for_project(
         title=note_title,
         status="In Progress" if is_cr else "Draft",
         brd_generation_phase=0 if is_cr else None,
-        # Note owns its own sub-issue (falls back to project's issue if sub-issue creation failed)
-        github_issue_url=sub_issue_url or project.github_issue_url,
-        github_issue_number=sub_issue_number or project.github_issue_number,
-        github_issue_node_id=sub_issue_node_id or project.github_issue_node_id,
-        github_issue_id=sub_issue_id or project.github_issue_id,
+        # Notes share the project's GitHub issue (no per-note sub-issue).
+        github_issue_url=project.github_issue_url,
+        github_issue_number=project.github_issue_number,
+        github_issue_node_id=project.github_issue_node_id,
+        github_issue_id=project.github_issue_id,
         github_project_item_id=None,
     )
     db.add(note)
