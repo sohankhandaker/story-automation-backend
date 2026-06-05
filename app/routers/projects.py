@@ -55,14 +55,30 @@ def create_project(
     try:
         issue = gh.create_issue(title=issue_title, body=issue_body, cfg=cfg)
     except Exception as e:
-        log.error(f"GitHub issue creation failed: {e}")
-        raise HTTPException(
-            status_code=502,
-            detail=(
-                f"GitHub issue could not be created: {e}. Ensure your OAuth "
-                f"token has 'repo' scope and the OAuth app is approved for the org."
-            ),
-        )
+        # 403 often means the user's OAuth token lacks repo write access on the org.
+        # Fall back to the server PAT and retry before giving up.
+        if "403" in str(e):
+            fallback = gh._env_cfg()
+            if fallback.token and fallback.token != cfg.token:
+                log.info("User token returned 403 — retrying issue creation with server PAT")
+                try:
+                    issue = gh.create_issue(title=issue_title, body=issue_body, cfg=fallback)
+                    cfg = fallback
+                except Exception as e2:
+                    log.error(f"GitHub issue creation failed (server fallback): {e2}")
+                    raise HTTPException(status_code=502, detail=f"GitHub issue could not be created: {e2}.")
+            else:
+                log.error(f"GitHub issue creation failed: {e}")
+                raise HTTPException(status_code=502, detail=f"GitHub issue could not be created: {e}.")
+        else:
+            log.error(f"GitHub issue creation failed: {e}")
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    f"GitHub issue could not be created: {e}. Ensure your OAuth "
+                    f"token has 'repo' scope and the OAuth app is approved for the org."
+                ),
+            )
 
     try:
         item_id = gh.add_to_project(issue["node_id"], cfg=cfg)

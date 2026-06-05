@@ -571,11 +571,24 @@ def create_note_for_project(
             cfg = cfg_for_user(current_user)
             prefix = "[Change Request] " if is_cr else "[Note] "
             heading = "Change Request" if is_cr else "Meeting Note"
-            issue = gh.create_issue(
-                title=f"{prefix}{note_title}",
-                body=f"**{heading} for project [{project.title}]({project.github_issue_url})**\n\n{body.raw_notes}",
-                cfg=cfg,
-            )
+            issue_body_text = f"**{heading} for project [{project.title}]({project.github_issue_url})**\n\n{body.raw_notes}"
+            try:
+                issue = gh.create_issue(
+                    title=f"{prefix}{note_title}",
+                    body=issue_body_text,
+                    cfg=cfg,
+                )
+            except Exception as e:
+                if "403" in str(e):
+                    fallback = gh._env_cfg()
+                    if fallback.token and fallback.token != cfg.token:
+                        log.info("Note issue 403 — retrying with server PAT")
+                        issue = gh.create_issue(title=f"{prefix}{note_title}", body=issue_body_text, cfg=fallback)
+                        cfg = fallback
+                    else:
+                        raise
+                else:
+                    raise
             sub_issue_url = issue["url"]
             sub_issue_number = issue["number"]
             sub_issue_node_id = issue["node_id"]
@@ -894,13 +907,30 @@ def mark_ready(
         # Legacy standalone note: create its own GitHub issue on shared board
         preview = note.raw_notes[:60] + ("…" if len(note.raw_notes) > 60 else "")
         try:
-            issue = gh.create_issue(
-                title=f"BRD: {preview}",
-                body="Analysing meeting notes and generating BRD…\n\nThis will be updated automatically.",
-                cfg=cfg,
-            )
-            item_id = gh.add_to_project(issue["node_id"], cfg=cfg)
-            gh.update_project_status(item_id, "In Progress", cfg=cfg)
+            iss_cfg = cfg
+            try:
+                issue = gh.create_issue(
+                    title=f"BRD: {preview}",
+                    body="Analysing meeting notes and generating BRD…\n\nThis will be updated automatically.",
+                    cfg=iss_cfg,
+                )
+            except Exception as e:
+                if "403" in str(e):
+                    fallback = gh._env_cfg()
+                    if fallback.token and fallback.token != iss_cfg.token:
+                        log.info("Standalone note issue 403 — retrying with server PAT")
+                        issue = gh.create_issue(
+                            title=f"BRD: {preview}",
+                            body="Analysing meeting notes and generating BRD…\n\nThis will be updated automatically.",
+                            cfg=fallback,
+                        )
+                        iss_cfg = fallback
+                    else:
+                        raise
+                else:
+                    raise
+            item_id = gh.add_to_project(issue["node_id"], cfg=iss_cfg)
+            gh.update_project_status(item_id, "In Progress", cfg=iss_cfg)
             note.github_issue_url = issue["url"]
             note.github_issue_number = issue["number"]
             note.github_issue_node_id = issue["node_id"]
