@@ -86,3 +86,19 @@ def _migrate():
                 conn.commit()
             except Exception:
                 conn.rollback()
+
+    # Widen INTEGER columns that now need BIGINT (GitHub issue IDs exceed 2^31)
+    if not is_sqlite:
+        bigint_cols = [
+            ("projects",      "github_issue_id"),
+            ("meeting_notes", "github_issue_id"),
+            ("prd_documents", "github_issue_id"),
+        ]
+        with engine.connect() as conn:
+            for table, col in bigint_cols:
+                try:
+                    conn.execute(__import__("sqlalchemy").text(
+                        f"ALTER TABLE {table} ALTER COLUMN {col} TYPE BIGINT"))
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
