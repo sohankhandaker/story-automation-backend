@@ -18,7 +18,7 @@ def _is_configured() -> bool:
 
 def _from_address() -> str:
     addr = settings.email_from_address or settings.smtp_username
-    name = settings.email_from_name or "Story Automation"
+    name = settings.email_from_name or "SERA"
     return f"{name} <{addr}>"
 
 
@@ -234,7 +234,7 @@ def _base(header_icon: str, header_title: str, header_sub: str, body: str) -> st
 <body>
 <div class="outer">
   <div class="logo-bar">
-    <span><span class="dot"></span><strong>SELISE Story Automation</strong></span>
+    <span><span class="dot"></span><strong>SELISE SERA</strong></span>
   </div>
   <div class="card">
     <div class="hd">
@@ -247,7 +247,7 @@ def _base(header_icon: str, header_title: str, header_sub: str, body: str) -> st
     </div>
     <hr class="div">
     <div class="ft">
-      <p>This is an automated message from <strong>SELISE Story Automation</strong>.<br>
+      <p>This is an automated message from <strong>SELISE SERA</strong>.<br>
       Do not reply — use <a href="https://github.com">GitHub</a> to interact with the story.</p>
     </div>
   </div>
@@ -306,7 +306,7 @@ def _tpl_review_request(
         </div>
       </div>
 """
-    return _base("👋", "Your review is requested", "SELISE Story Automation · User Story Review", body)
+    return _base("👋", "Your review is requested", "SELISE SERA · User Story Review", body)
 
 
 def _tpl_review_updated(
@@ -359,7 +359,7 @@ def _tpl_review_updated(
       </div>
 """
     return _base("✏️", "Story revised — please re-review",
-                 f"Review Cycle {cycle} · SELISE Story Automation", body)
+                 f"Review Cycle {cycle} · SELISE SERA", body)
 
 
 def _tpl_approved(
@@ -392,7 +392,7 @@ def _tpl_approved(
         <a class="cta" href="{github_issue_url}">View Final Story →</a>
       </div>
 """
-    return _base("🎉", "Your story has been approved!", "SELISE Story Automation", body)
+    return _base("🎉", "Your story has been approved!", "SELISE SERA", body)
 
 
 def _tpl_feedback_received(
@@ -435,4 +435,4 @@ def _tpl_feedback_received(
       </div>
 """
     return _base("💬", "Feedback received on your story",
-                 f"Review Cycle {cycle} · SELISE Story Automation", body)
+                 f"Review Cycle {cycle} · SELISE SERA", body)

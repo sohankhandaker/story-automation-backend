@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     smtp_port: int = 587
     smtp_username: str = ""        # e.g. yourapp@gmail.com
     smtp_password: str = ""        # Gmail App Password (not your login password)
-    email_from_name: str = "SELISE Story Automation"
+    email_from_name: str = "SELISE SERA"
     email_from_address: str = ""   # defaults to smtp_username if empty
 
     class Config:

@@ -126,7 +126,7 @@ def send_chat(
                 try:
                     gh.update_issue_body(
                         task.github_issue_number,
-                        f"**Requirement:**\n\n{updated_desc}\n\n*Updated via Story Automation App*",
+                        f"**Requirement:**\n\n{updated_desc}\n\n*Updated via SERA App*",
                         cfg=cfg_for_user(current_user),
                     )
                 except Exception:

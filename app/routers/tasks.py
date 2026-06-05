@@ -61,7 +61,7 @@ def create_task(
 
     # Create GitHub issue
     user_cfg = cfg_for_user(current_user)
-    issue_body = f"**Requirement:**\n\n{extracted['description']}\n\n*Created via Story Automation App*"
+    issue_body = f"**Requirement:**\n\n{extracted['description']}\n\n*Created via SERA App*"
     try:
         issue = gh.create_issue(extracted["title"], issue_body, cfg=user_cfg)
         task.github_issue_url = issue["url"]
