@@ -299,10 +299,19 @@ def _full_brd_pipeline(note_id: str):
                 models.Project.id == note.project_id
             ).first()
             if _proj and _proj.github_project_item_id:
+                project_cfg = cfg_for_project(creator, _proj)
                 try:
-                    gh.update_project_status(_proj.github_project_item_id, "In Review", cfg=cfg)
+                    gh.update_project_status(_proj.github_project_item_id, "In Review", cfg=project_cfg)
                 except Exception as e:
-                    log.warning(f"Board In Review update failed after BRD complete: {e}")
+                    # Fall back to server PAT — user's PAT may lack repo write perms
+                    fallback = gh._env_cfg()
+                    if fallback.token and fallback.token != project_cfg.token:
+                        try:
+                            gh.update_project_status(_proj.github_project_item_id, "In Review", cfg=fallback)
+                        except Exception as e2:
+                            log.warning(f"Board In Review update failed (both tokens): user={e} pat={e2}")
+                    else:
+                        log.warning(f"Board In Review update failed after BRD complete: {e}")
 
     except Exception as e:
         log.error(f"BRD pipeline failed for note {note_id}: {e}")
@@ -910,7 +919,15 @@ def mark_ready(
                 try:
                     gh.update_project_status(project.github_project_item_id, "In Progress", cfg=project_cfg)
                 except Exception as e:
-                    log.warning(f"Board status update failed: {e}")
+                    # Fall back to server PAT — user's PAT may lack repo write perms
+                    fallback = gh._env_cfg()
+                    if fallback.token and fallback.token != project_cfg.token:
+                        try:
+                            gh.update_project_status(project.github_project_item_id, "In Progress", cfg=fallback)
+                        except Exception as e2:
+                            log.warning(f"Board status update failed (both tokens): user={e} pat={e2}")
+                    else:
+                        log.warning(f"Board status update failed: {e}")
 
             preview = note.raw_notes[:80] + ("…" if len(note.raw_notes) > 80 else "")
             issue_num = note.github_issue_number or project.github_issue_number
