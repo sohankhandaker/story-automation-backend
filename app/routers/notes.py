@@ -80,9 +80,16 @@ def _combined_notes(note: models.MeetingNote) -> str:
 
 
 def _get_project_issue_number(note: models.MeetingNote, db: Session) -> int | None:
-    """Return the GitHub issue number from the note's project, if any."""
-    if not note.project_id:
+    """Return the GitHub issue number to use for comments on this note.
+
+    Prefers the note's own sub-issue number so each note has its own
+    discussion thread. Falls back to the project's main issue only when
+    the note was created before sub-issues existed.
+    """
+    if note.github_issue_number:
         return note.github_issue_number
+    if not note.project_id:
+        return None
     project = db.query(models.Project).filter(models.Project.id == note.project_id).first()
     return project.github_issue_number if project else None
 
@@ -283,6 +290,13 @@ def _full_brd_pipeline(note_id: str):
                 )
             except Exception as e:
                 log.warning(f"GitHub BRD comment failed: {e}")
+
+        # Move the note's own sub-issue to In Review on the board
+        if note.github_project_item_id:
+            try:
+                gh.update_project_status(note.github_project_item_id, "In Review", cfg=cfg)
+            except Exception as e:
+                log.warning(f"Board In Review update failed after BRD complete: {e}")
 
     except Exception as e:
         log.error(f"BRD pipeline failed for note {note_id}: {e}")
@@ -601,7 +615,7 @@ def create_note_for_project(
 
             try:
                 sub_item_id = gh.add_to_project(sub_issue_node_id, cfg=cfg)
-                gh.update_project_status(sub_item_id, "Backlog", cfg=cfg)
+                gh.update_project_status(sub_item_id, "Draft", cfg=cfg)
             except Exception as e:
                 log.warning(f"Board attach failed for note issue #{sub_issue_number}: {e}")
         except Exception as e:
@@ -874,23 +888,25 @@ def mark_ready(
     cfg = cfg_for_user(current_user)
 
     if note.project_id:
-        # Project-linked note: use the project's own GitHub board
+        # Project-linked note: comments and board updates target the note's
+        # own sub-issue (created during note creation), not the project issue.
         project = db.query(models.Project).filter(
             models.Project.id == note.project_id
         ).first()
         if project and project.github_issue_number:
-            # Use the project's dedicated board config
             project_cfg = cfg_for_project(current_user, project)
-            if project.github_project_item_id:
+            # Update note's own sub-issue board item to In Progress
+            if note.github_project_item_id:
                 try:
-                    gh.update_project_status(project.github_project_item_id, "In Progress", cfg=project_cfg)
+                    gh.update_project_status(note.github_project_item_id, "In Progress", cfg=project_cfg)
                 except Exception as e:
                     log.warning(f"Board status update failed: {e}")
 
             preview = note.raw_notes[:80] + ("…" if len(note.raw_notes) > 80 else "")
+            issue_num = note.github_issue_number or project.github_issue_number
             try:
                 gh.add_comment(
-                    project.github_issue_number,
+                    issue_num,
                     f"### BRD Generation Started\n\n"
                     f"Analysing notes and generating Business Requirements Document…\n\n"
                     f"> {preview}",
@@ -898,11 +914,6 @@ def mark_ready(
                 )
             except Exception as e:
                 log.warning(f"GitHub start comment failed: {e}")
-
-            note.github_issue_url = project.github_issue_url
-            note.github_issue_number = project.github_issue_number
-            note.github_issue_node_id = project.github_issue_node_id
-            note.github_project_item_id = project.github_project_item_id
     else:
         # Legacy standalone note: create its own GitHub issue on shared board
         preview = note.raw_notes[:60] + ("…" if len(note.raw_notes) > 60 else "")
@@ -1133,6 +1144,43 @@ def regenerate_cr_summary(
     db.refresh(note)
 
     background_tasks.add_task(_full_cr_pipeline, note.id)
+    return _note_dict(note, db)
+
+
+@router.post("/{note_id}/send-brd-to-planner", response_model=schemas.MeetingNoteResponse)
+def send_brd_to_planner(
+    note_id: str,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    """Post the approved BRD download link as a GitHub comment on the note's sub-issue."""
+    note = db.query(models.MeetingNote).filter(
+        models.MeetingNote.id == note_id,
+        models.MeetingNote.creator_id == current_user.id,
+    ).first()
+    if not note:
+        raise HTTPException(status_code=404, detail="Note not found")
+    if note.status not in ("Approved",):
+        raise HTTPException(status_code=400, detail="BRD must be Approved before sending to Planner")
+    if not note.brd_draft:
+        raise HTTPException(status_code=400, detail="No BRD content to send")
+
+    issue_number = _get_project_issue_number(note, db)
+    if issue_number:
+        try:
+            cfg = cfg_for_user(current_user)
+            download_url = note.github_file_raw_url or note.github_file_url or ""
+            link_line = f"\n\n📄 **[Download BRD]({download_url})**" if download_url else ""
+            gh.add_comment(
+                issue_number,
+                f"### ✅ BRD Sent to Planner{link_line}\n\n"
+                f"The approved Business Requirements Document has been handed off to the planning team. "
+                f"The planner can download the BRD above and begin sprint planning.",
+                cfg=cfg,
+            )
+        except Exception as e:
+            log.warning(f"send-brd-to-planner GitHub comment failed: {e}")
+
     return _note_dict(note, db)
 
 

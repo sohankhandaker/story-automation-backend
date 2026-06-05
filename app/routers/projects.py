@@ -82,7 +82,7 @@ def create_project(
 
     try:
         item_id = gh.add_to_project(issue["node_id"], cfg=cfg)
-        gh.update_project_status(item_id, "Backlog", cfg=cfg)
+        gh.update_project_status(item_id, "Draft", cfg=cfg)
     except Exception as e:
         log.warning(f"GitHub board item setup failed: {e}")
 
