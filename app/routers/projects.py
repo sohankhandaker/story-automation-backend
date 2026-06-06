@@ -1,7 +1,6 @@
 import logging
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from ..database import get_db
 from .. import models, schemas
@@ -11,46 +10,6 @@ from ..services import github as gh
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/projects", tags=["projects"])
-
-
-# ── ONE-TIME DB RESET — DELETE THIS ENDPOINT AFTER USE ───────────────────────
-
-class _ResetConfirm(BaseModel):
-    confirm: str  # must equal "RESET_ALL_DATA"
-
-
-@router.post("/admin/db-reset", tags=["admin"])
-def admin_db_reset(
-    body: _ResetConfirm,
-    db: Session = Depends(get_db),
-):
-    """Wipe ALL data including users. Requires confirm='RESET_ALL_DATA'."""
-    if body.confirm != "RESET_ALL_DATA":
-        raise HTTPException(status_code=400, detail="Send confirm='RESET_ALL_DATA' to proceed.")
-
-    counts = {}
-
-    counts["prd_versions"] = db.query(models.PrdVersion).delete(synchronize_session=False)
-    counts["prd_documents"] = db.query(models.PrdDocument).delete(synchronize_session=False)
-    counts["brd_versions"] = db.query(models.BrdVersion).delete(synchronize_session=False)
-    counts["note_attachments"] = db.query(models.NoteAttachment).delete(synchronize_session=False)
-    counts["note_entries"] = db.query(models.NoteEntry).delete(synchronize_session=False)
-    counts["meeting_notes"] = db.query(models.MeetingNote).delete(synchronize_session=False)
-    counts["projects"] = db.query(models.Project).delete(synchronize_session=False)
-    counts["customers"] = db.query(models.Customer).delete(synchronize_session=False)
-    counts["activity_logs"] = db.query(models.ActivityLog).delete(synchronize_session=False)
-    counts["review_cycles"] = db.query(models.ReviewCycle).delete(synchronize_session=False)
-    counts["chat_messages"] = db.query(models.ChatMessage).delete(synchronize_session=False)
-    counts["tasks"] = db.query(models.Task).delete(synchronize_session=False)
-
-    counts["users"] = db.query(models.User).delete(synchronize_session=False)
-
-    db.commit()
-    log.warning(f"DB FULL RESET executed — all rows deleted: {counts}")
-    return {"status": "reset_complete", "deleted": counts}
-
-
-# ── END ONE-TIME DB RESET ─────────────────────────────────────────────────────
 
 
 def _build_project_issue_body(title: str, client_name: str, short_description: str | None) -> str:
