@@ -399,20 +399,62 @@ def _full_cr_pipeline(note_id: str):
         note.status = "In Review"
         db.commit()
 
-        # Post to GitHub ticket
-        if note.github_issue_number and creator:
-            try:
-                project = db.query(models.Project).filter(
-                    models.Project.id == note.project_id
-                ).first() if note.project_id else None
-                cfg = cfg_for_project(creator, project) if project else cfg_for_user(creator)
+        # Create a dedicated [CR] ticket on the per-project board
+        if note.project_id and creator:
+            project = db.query(models.Project).filter(
+                models.Project.id == note.project_id
+            ).first()
+            cfg = cfg_for_project(creator, project) if project else cfg_for_user(creator)
+
+            if project and project.github_project_node_id:
+                try:
+                    cr_issue = gh.create_issue(
+                        title=f"[CR] {note.title or 'Change Request'}",
+                        body=(
+                            f"## Change Request: {note.title or 'Change Request'}\n\n"
+                            f"**Project:** {project.title}\n\n"
+                            f"### Summary\n\n{summary[:3000]}{'…' if len(summary) > 3000 else ''}"
+                        ),
+                        cfg=cfg,
+                    )
+                    cr_item_id = gh.add_to_project(cr_issue["node_id"], cfg=cfg)
+                    gh.update_project_status(cr_item_id, "In Progress", cfg=cfg)
+
+                    if project.github_issue_number and cr_issue.get("id"):
+                        try:
+                            gh.add_sub_issue(project.github_issue_number, cr_issue["id"], cfg=cfg)
+                        except Exception as sub_e:
+                            log.warning(f"add_sub_issue (CR) failed: {sub_e}")
+
+                    note.github_issue_url = cr_issue["url"]
+                    note.github_issue_number = cr_issue["number"]
+                    note.github_issue_node_id = cr_issue["node_id"]
+                    note.github_issue_id = cr_issue["id"]
+                    note.github_project_item_id = cr_item_id
+                    db.commit()
+
+                    _safe_add_comment(
+                        cr_issue["number"],
+                        f"### CR Summary Generated\n\n{summary[:1500]}{'…' if len(summary) > 1500 else ''}",
+                        cfg,
+                    )
+                except Exception as e:
+                    log.warning(f"CR issue creation on project board failed: {e}")
+                    # Fallback: post to project overview
+                    if project.github_issue_number:
+                        _safe_add_comment(
+                            project.github_issue_number,
+                            f"### CR Summary: {note.title or 'Change Request'}\n\n"
+                            f"{summary[:1500]}{'…' if len(summary) > 1500 else ''}",
+                            cfg,
+                        )
+            elif project and project.github_issue_number:
+                # Shared-board fallback
                 _safe_add_comment(
-                    note.github_issue_number,
+                    project.github_issue_number,
                     f"### CR Summary Generated\n\n{summary[:1500]}{'…' if len(summary) > 1500 else ''}",
                     cfg,
                 )
-            except Exception as e:
-                log.warning(f"CR GitHub comment failed: {e}")
 
         log.info(f"CR pipeline complete for note {note_id}")
     except Exception as e:
@@ -639,6 +681,8 @@ def create_note_for_project(
         except Exception as e:
             log.warning(f"Could not post note as comment on project issue: {e}")
 
+    # CRs get their own issue on the per-project board (created in _full_cr_pipeline).
+    # Regular notes share the project overview issue until BRD starts (mark_ready creates their issue).
     note = models.MeetingNote(
         creator_id=current_user.id,
         project_id=project_id,
@@ -648,11 +692,10 @@ def create_note_for_project(
         title=note_title,
         status="In Progress" if is_cr else "Draft",
         brd_generation_phase=0 if is_cr else None,
-        # Notes share the project's GitHub issue (no per-note sub-issue).
-        github_issue_url=project.github_issue_url,
-        github_issue_number=project.github_issue_number,
-        github_issue_node_id=project.github_issue_node_id,
-        github_issue_id=project.github_issue_id,
+        github_issue_url=None if is_cr else project.github_issue_url,
+        github_issue_number=None if is_cr else project.github_issue_number,
+        github_issue_node_id=None if is_cr else project.github_issue_node_id,
+        github_issue_id=None if is_cr else project.github_issue_id,
         github_project_item_id=None,
     )
     db.add(note)
@@ -906,42 +949,86 @@ def mark_ready(
     cfg = cfg_for_user(current_user)
 
     if note.project_id:
-        # Project-linked note: comments and board updates target the note's
-        # own sub-issue (created during note creation), not the project issue.
         project = db.query(models.Project).filter(
             models.Project.id == note.project_id
         ).first()
-        if project and project.github_issue_number:
+        if project:
             project_cfg = cfg_for_project(current_user, project)
-            # Notes are sub-issues with no board card of their own, so move
-            # the *parent project* card to In Progress when BRD generation
-            # starts (so the board reflects active work).
-            if project.github_project_item_id:
-                try:
-                    gh.update_project_status(project.github_project_item_id, "In Progress", cfg=project_cfg)
-                except Exception as e:
-                    # Fall back to server PAT — user's PAT may lack repo write perms
-                    fallback = gh._env_cfg()
-                    if fallback.token and fallback.token != project_cfg.token:
-                        try:
-                            gh.update_project_status(project.github_project_item_id, "In Progress", cfg=fallback)
-                        except Exception as e2:
-                            log.warning(f"Board status update failed (both tokens): user={e} pat={e2}")
-                    else:
-                        log.warning(f"Board status update failed: {e}")
-
             preview = note.raw_notes[:80] + ("…" if len(note.raw_notes) > 80 else "")
-            issue_num = note.github_issue_number or project.github_issue_number
-            try:
-                _safe_add_comment(
-                    issue_num,
-                    f"### BRD Generation Started\n\n"
-                    f"Analysing notes and generating Business Requirements Document…\n\n"
-                    f"> {preview}",
-                    project_cfg,
-                )
-            except Exception as e:
-                log.warning(f"GitHub start comment failed: {e}")
+
+            if project.github_project_node_id:
+                # Per-project board: create a dedicated BRD ticket on the project board.
+                try:
+                    brd_issue = gh.create_issue(
+                        title=f"[BRD] {note.title or project.title}",
+                        body=(
+                            f"## BRD: {note.title or project.title}\n\n"
+                            f"**Project:** {project.title}\n\n"
+                            f"BRD generation in progress — this ticket will be updated automatically.\n\n"
+                            f"> {preview}"
+                        ),
+                        cfg=project_cfg,
+                    )
+                    brd_item_id = gh.add_to_project(brd_issue["node_id"], cfg=project_cfg)
+                    gh.update_project_status(brd_item_id, "In Progress", cfg=project_cfg)
+
+                    # Attach as sub-issue of the project overview ticket
+                    if project.github_issue_number and brd_issue.get("id"):
+                        try:
+                            gh.add_sub_issue(project.github_issue_number, brd_issue["id"], cfg=project_cfg)
+                        except Exception as sub_e:
+                            log.warning(f"add_sub_issue (BRD) failed: {sub_e}")
+
+                    note.github_issue_url = brd_issue["url"]
+                    note.github_issue_number = brd_issue["number"]
+                    note.github_issue_node_id = brd_issue["node_id"]
+                    note.github_issue_id = brd_issue["id"]
+                    note.github_project_item_id = brd_item_id
+                    db.commit()
+
+                    _safe_add_comment(
+                        brd_issue["number"],
+                        f"### BRD Generation Started\n\n"
+                        f"Analysing notes and generating Business Requirements Document…\n\n"
+                        f"> {preview}",
+                        project_cfg,
+                    )
+                except Exception as e:
+                    log.warning(f"BRD issue creation on project board failed: {e}")
+                    # Fallback: post to project overview
+                    if project.github_issue_number:
+                        _safe_add_comment(
+                            project.github_issue_number,
+                            f"### BRD Generation Started\n\n> {preview}",
+                            project_cfg,
+                        )
+            else:
+                # Shared-board fallback: move project overview card to In Progress
+                if project.github_project_item_id:
+                    try:
+                        gh.update_project_status(project.github_project_item_id, "In Progress", cfg=project_cfg)
+                    except Exception as e:
+                        fallback = gh._env_cfg()
+                        if fallback.token and fallback.token != project_cfg.token:
+                            try:
+                                gh.update_project_status(project.github_project_item_id, "In Progress", cfg=fallback)
+                            except Exception as e2:
+                                log.warning(f"Board status update failed (both tokens): user={e} pat={e2}")
+                        else:
+                            log.warning(f"Board status update failed: {e}")
+
+                issue_num = note.github_issue_number or project.github_issue_number
+                if issue_num:
+                    try:
+                        _safe_add_comment(
+                            issue_num,
+                            f"### BRD Generation Started\n\n"
+                            f"Analysing notes and generating Business Requirements Document…\n\n"
+                            f"> {preview}",
+                            project_cfg,
+                        )
+                    except Exception as e:
+                        log.warning(f"GitHub start comment failed: {e}")
     else:
         # Legacy standalone note: create its own GitHub issue on shared board
         preview = note.raw_notes[:60] + ("…" if len(note.raw_notes) > 60 else "")

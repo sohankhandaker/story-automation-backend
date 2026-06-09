@@ -937,8 +937,9 @@ def run_brd_approved(note_id: str):
         note.status = "Approved"
         db.commit()
 
-        # Move the project's board card to Done (notes inherit project's card)
-        project_item_id = (project.github_project_item_id if project else None) or note.github_project_item_id
+        # Mark the BRD ticket Done. Per-project board: use note's own card.
+        # Shared-board fallback: use the project's overview card.
+        project_item_id = note.github_project_item_id or (project.github_project_item_id if project else None)
         if project_item_id:
             try:
                 gh.update_project_status(project_item_id, "Done", cfg=cfg)

@@ -3,7 +3,7 @@ GitHub service — REST API for issues/comments, GraphQL for Projects v2.
 Supports per-user config (token/owner/repo/project) falling back to env vars.
 """
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as dc_replace
 from datetime import datetime
 from typing import Optional
 import httpx
@@ -277,6 +277,16 @@ def _do_create_project_v2(owner_id: str, title: str, cfg: GHConfig) -> dict:
         "status_field_id": status_field_id,
         "status_options":  status_options,
     }
+
+
+def board_cfg(base: GHConfig, board: dict) -> GHConfig:
+    """Build a GHConfig scoped to a specific board from create_project_board() result."""
+    return dc_replace(
+        base,
+        project_id=board["project_id"],
+        status_field_id=board.get("status_field_id"),
+        status_options=board.get("status_options") or {},
+    )
 
 
 def create_project_board(title: str, description: str, cfg: GHConfig) -> dict:

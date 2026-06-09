@@ -96,6 +96,38 @@ def _full_prd_pipeline(prd_id: str):
         creator = db.query(models.User).filter(models.User.id == note.creator_id).first()
         project = db.query(models.Project).filter(models.Project.id == note.project_id).first() if note.project_id else None
         cfg = cfg_for_project(creator, project) if project else cfg_for_user(creator)
+
+        # Create a dedicated [PRD] ticket on the per-project board before generation starts.
+        if project and project.github_project_node_id:
+            try:
+                prd_issue = gh.create_issue(
+                    title=f"[PRD] {note.title or project.title}",
+                    body=(
+                        f"## PRD: {note.title or project.title}\n\n"
+                        f"**Project:** {project.title}\n\n"
+                        f"PRD generation in progress — this ticket will be updated automatically."
+                    ),
+                    cfg=cfg,
+                )
+                prd_item_id = gh.add_to_project(prd_issue["node_id"], cfg=cfg)
+                gh.update_project_status(prd_item_id, "In Progress", cfg=cfg)
+
+                if project.github_issue_number and prd_issue.get("id"):
+                    try:
+                        gh.add_sub_issue(project.github_issue_number, prd_issue["id"], cfg=cfg)
+                    except Exception as sub_e:
+                        log.warning(f"add_sub_issue (PRD) failed: {sub_e}")
+
+                prd.github_issue_url = prd_issue["url"]
+                prd.github_issue_number = prd_issue["number"]
+                prd.github_issue_node_id = prd_issue["node_id"]
+                prd.github_issue_id = prd_issue["id"]
+                prd.github_project_item_id = prd_item_id
+                db.commit()
+                log.info(f"PRD ticket created: {prd_issue['url']}")
+            except Exception as e:
+                log.warning(f"PRD issue creation on project board failed: {e}")
+
         issue_number = _get_project_issue_number(note, db)
 
         def _phase_cb(phase_num: int, _total: int):
