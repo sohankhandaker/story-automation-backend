@@ -244,7 +244,8 @@ def _get_authenticated_user_node_id(cfg: GHConfig) -> Optional[str]:
 
 
 def _do_create_project_v2(owner_id: str, title: str, cfg: GHConfig) -> dict:
-    """Run createProjectV2 mutation and return project metadata."""
+    """Run createProjectV2 mutation and return project metadata.
+    Returns None if the mutation succeeds but returns null (e.g. insufficient org permissions)."""
     create_q = """
     mutation($ownerId:ID!, $title:String!) {
       createProjectV2(input:{ownerId:$ownerId, title:$title}) {
@@ -260,7 +261,12 @@ def _do_create_project_v2(owner_id: str, title: str, cfg: GHConfig) -> dict:
     }
     """
     data = _gql(create_q, {"ownerId": owner_id, "title": title}, cfg)
-    project = data["createProjectV2"]["projectV2"]
+    mutation_result = data.get("createProjectV2")
+    if not mutation_result:
+        return None  # org rejected silently — caller should try user-owned board
+    project = mutation_result.get("projectV2")
+    if not project:
+        return None
 
     status_field_id = None
     status_options: dict = {}
@@ -291,42 +297,46 @@ def board_cfg(base: GHConfig, board: dict) -> GHConfig:
 
 def create_project_board(title: str, description: str, cfg: GHConfig) -> dict:
     """
-    Create a new GitHub Project v2 board under the configured org owner.
-    Requires the OAuth token to have 'project' scope AND, for org-owned boards,
-    the OAuth app must be approved by the org (Settings → Third-party Access).
+    Create a new GitHub Project v2 board.
+    Strategy:
+      1. Try creating under the org (cfg.owner) — works if user is org owner/admin.
+      2. If org rejects (null response), fall back to user's personal account.
+    Requires OAuth token with 'project' scope.
     """
     if not cfg.token:
         raise RuntimeError(
             "No GitHub token configured. Sign in via GitHub OAuth (Settings → Connect GitHub)."
         )
-    if not cfg.owner:
-        raise RuntimeError("No GitHub owner (org/user login) configured.")
 
-    owner_id = _resolve_owner_id(cfg.owner, cfg)
-    if not owner_id:
+    # Strategy 1: org-owned board
+    if cfg.owner:
+        org_id = _resolve_owner_id(cfg.owner, cfg)
+        if org_id:
+            try:
+                result = _do_create_project_v2(org_id, title, cfg)
+                if result:
+                    log.info(f"Created org-level board {title!r}: {result['project_url']}")
+                    return result
+                log.info(
+                    f"createProjectV2 under org {cfg.owner!r} returned null "
+                    f"(user is not org owner) — falling back to user-owned board"
+                )
+            except Exception as e:
+                log.warning(f"Org-level board creation failed: {e}")
+
+    # Strategy 2: user-owned board (works for any authenticated user)
+    user_id = _get_authenticated_user_node_id(cfg)
+    if not user_id:
         raise RuntimeError(
-            f"Cannot resolve GitHub owner node ID for {cfg.owner!r}. "
-            f"Check that the org exists and that your OAuth token has access "
-            f"(re-login with the GitHub button to refresh scopes)."
+            "Cannot resolve authenticated user node ID — check token validity."
         )
-
-    try:
-        result = _do_create_project_v2(owner_id, title, cfg)
-    except Exception as e:
-        msg = str(e)
-        hint = ""
-        if "insufficient" in msg.lower() or "scope" in msg.lower() or "forbidden" in msg.lower() or "403" in msg:
-            hint = (
-                " — Your OAuth token is missing 'project' scope, OR the GitHub OAuth app "
-                f"is not approved for org {cfg.owner!r}. "
-                f"Go to https://github.com/organizations/{cfg.owner}/settings/oauth_application_policy "
-                "to grant access, then re-login."
-            )
-        elif "saml" in msg.lower():
-            hint = " — The org enforces SAML SSO. Authorize your OAuth token for the org in GitHub Settings → Applications."
-        raise RuntimeError(f"createProjectV2 failed for owner={cfg.owner!r}: {msg}{hint}") from e
-
-    log.info(f"Created GitHub project board {title!r}: {result['project_url']}")
+    result = _do_create_project_v2(user_id, title, cfg)
+    if not result:
+        raise RuntimeError(
+            "createProjectV2 returned null for both org and user owner — "
+            "check that the OAuth token has 'project' scope."
+        )
+    log.info(f"Created user-level board {title!r}: {result['project_url']}")
     return result
 
 
