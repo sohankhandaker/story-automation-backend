@@ -11,7 +11,7 @@ from ..services import agent
 from ..services.github import cfg_for_user, cfg_for_project
 from ..services import github as gh
 from ..services import engine as engine_svc
-from ..services.engine import _safe_add_comment
+from ..services.engine import _safe_add_comment, _format_user_comment
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/notes", tags=["prd"])
@@ -199,16 +199,16 @@ def _full_prd_pipeline(prd_id: str):
 
         # Post PRD as a comment (includes download link if file was pushed)
         if issue_number:
-            _safe_add_comment(
-                issue_number,
-                _build_prd_comment(note, prd, result["full_prd"]),
-                cfg,
-            )
-            _safe_add_comment(
-                issue_number,
-                "PRD generation complete!\n\nThe full Product Requirements Document is in the comment above.\n\nThe creator will assign a reviewer shortly.",
-                cfg,
-            )
+            creator = db.query(models.User).filter(models.User.id == note.creator_id).first()
+            prd_content_comment = _build_prd_comment(note, prd, result["full_prd"])
+            if creator:
+                prd_content_comment = _format_user_comment(creator, "PRD Generated", prd_content_comment)
+            _safe_add_comment(issue_number, prd_content_comment, cfg)
+
+            completion_comment = "PRD generation complete!\n\nThe full Product Requirements Document is in the comment above.\n\nThe creator will assign a reviewer shortly."
+            if creator:
+                completion_comment = _format_user_comment(creator, "PRD Complete", completion_comment)
+            _safe_add_comment(issue_number, completion_comment, cfg)
 
     except Exception as e:
         log.error(f"PRD pipeline failed for prd_id={prd_id}: {e}")

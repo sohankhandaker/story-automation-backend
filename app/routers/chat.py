@@ -6,7 +6,7 @@ from .. import models, schemas
 from ..deps import get_current_user
 from ..services import github as gh, agent, email_service
 from ..services.github import cfg_for_user
-from ..services.engine import _safe_add_comment
+from ..services.engine import _safe_add_comment, _format_user_comment
 
 router = APIRouter(prefix="/api/tasks", tags=["chat"])
 
@@ -72,8 +72,7 @@ def send_chat(
                 task.reviewer_name = reviewer_name
 
             if task.github_issue_number:
-                if _safe_add_comment(
-                    task.github_issue_number,
+                reviewer_message = (
                     f"👋 @{github_username} — your review is requested for this user story.\n\n"
                     f"**The full story is in the issue description above** (scroll to the top).\n\n"
                     f"---\n\n"
@@ -85,9 +84,10 @@ def send_chat(
                     f"Reply with a comment containing **`APPROVED`** (or `LGTM` / `Looks good`) "
                     f"and the story will be marked as Done automatically.\n\n"
                     f"---\n"
-                    f"*Requested by @{current_user.github_username or current_user.name}*",
-                    user_cfg,
-                ):
+                    f"*Requested by @{current_user.github_username or current_user.name}*"
+                )
+                formatted_message = _format_user_comment(current_user, f"Review Requested: @{github_username}", reviewer_message)
+                if _safe_add_comment(task.github_issue_number, formatted_message, user_cfg):
                     replies.append(f"@{github_username} notified via GitHub.")
                 else:
                     replies.append(f"@{github_username} — GitHub notification failed.")

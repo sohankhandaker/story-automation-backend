@@ -62,6 +62,19 @@ def _is_confirm_change(text: str) -> bool:
     return any(k in t for k in _CONFIRM_CHANGE_KEYWORDS)
 
 
+def _format_user_comment(user: models.User, title: str, body: str = "") -> str:
+    """Format a comment with the user's display name and role indicator.
+
+    Returns a Markdown-formatted comment showing who from the app posted it.
+    """
+    user_display = user.name or user.github_username or "Unknown"
+    prefix = f"**{user_display}** ({user.github_username or 'App'}) — {title}"
+    if body:
+        return f"{prefix}\n\n{body}"
+    return prefix
+
+
+
 def _is_approval(comment_body: str) -> bool:
     text = comment_body.lower().strip()
     return any(kw in text for kw in _APPROVAL_KEYWORDS)
@@ -958,20 +971,20 @@ def run_brd_approved(note_id: str):
         # In shared board architecture: post BRD approval to project's main issue
         # (not the note's own issue, which no longer exists)
         if project and project.github_issue_number:
-            _safe_add_comment(
-                project.github_issue_number,
-                f"✅ **BRD approved by {reviewer}!**\n\n"
-                f"The BRD is now ready. The creator can proceed to PRD generation.",
-                cfg,
+            comment_body = _format_user_comment(
+                creator,
+                "BRD Approved",
+                f"✅ BRD approved by {reviewer}!\n\nThe BRD is now ready. The creator can proceed to PRD generation."
             )
+            _safe_add_comment(project.github_issue_number, comment_body, cfg)
         elif note.github_issue_number:
             # Fallback for notes without a project
-            _safe_add_comment(
-                note.github_issue_number,
-                f"✅ BRD approved by {reviewer}!\n\n"
-                f"The BRD is now **Done**. The creator can proceed to PRD generation.",
-                cfg,
+            comment_body = _format_user_comment(
+                creator,
+                "BRD Approved",
+                f"✅ BRD approved by {reviewer}!\n\nThe BRD is now ready. The creator can proceed to PRD generation."
             )
+            _safe_add_comment(note.github_issue_number, comment_body, cfg)
 
         log.info(f"BRD note {note_id} approved by {reviewer}")
 
@@ -1273,23 +1286,23 @@ def run_prd_approved(prd_id: str):
         project = db.query(models.Project).filter(models.Project.id == note.project_id).first() if note else None
         if project and project.github_issue_number:
             try:
-                _safe_add_comment(
-                    project.github_issue_number,
-                    f"✅ **PRD approved by {reviewer}!**\n\n"
-                    f"The PRD is ready to be sent to the Planner.",
-                    cfg,
+                comment_body = _format_user_comment(
+                    creator,
+                    "PRD Approved",
+                    f"✅ PRD approved by {reviewer}!\n\nThe PRD is ready to be sent to the Planner."
                 )
+                _safe_add_comment(project.github_issue_number, comment_body, cfg)
             except Exception as e:
                 log.warning(f"PRD approval comment failed: {e}")
         elif prd.github_issue_number:
             # Fallback for PRDs without a project
             try:
-                _safe_add_comment(
-                    prd.github_issue_number,
-                    f"✅ PRD approved by {reviewer}!\n\n"
-                    f"The PRD is ready to be sent to the Planner.",
-                    cfg,
+                comment_body = _format_user_comment(
+                    creator,
+                    "PRD Approved",
+                    f"✅ PRD approved by {reviewer}!\n\nThe PRD is ready to be sent to the Planner."
                 )
+                _safe_add_comment(prd.github_issue_number, comment_body, cfg)
             except Exception as e:
                 log.warning(f"PRD approval comment failed: {e}")
 
