@@ -89,28 +89,20 @@ def create_project(
     item_id: str | None = None
 
     try:
-        board = gh.create_project_board(
-            title=f"SERA — {body.title}",
-            description=body.short_description or "",
-            cfg=cfg,
-        )
-        board_node_id = board["project_id"]
-        board_url = board["project_url"]
-        board_status_field_id = board["status_field_id"]
-        board_status_options = board["status_options"] or {}
-
+        # Add issue to shared org board (projects/447) instead of creating per-project board
+        shared_board_number = 447
         if issue.get("node_id"):
-            b_cfg = gh.board_cfg(cfg, board)
-            item_id = gh.add_to_project(issue["node_id"], cfg=b_cfg)
-            gh.update_project_status(item_id, "In Progress", cfg=b_cfg)
+            item_id = gh.add_to_project_v2(
+                issue["node_id"],
+                shared_board_number,
+                cfg,
+            )
+            if item_id:
+                log.info(
+                    f"Added issue #{issue.get('number')} to shared board (projects/{shared_board_number})"
+                )
     except Exception as e:
-        log.warning(f"Per-project board creation failed — falling back to shared board: {e}")
-        try:
-            if issue.get("node_id"):
-                item_id = gh.add_to_project(issue["node_id"], cfg=cfg)
-                gh.update_project_status(item_id, "In Progress", cfg=cfg)
-        except Exception as e2:
-            log.warning(f"Shared board fallback also failed: {e2}")
+        log.warning(f"Failed to add issue to shared board: {e}")
 
     project = models.Project(
         creator_id=current_user.id,
@@ -123,11 +115,6 @@ def create_project(
         github_issue_number=issue.get("number"),
         github_issue_node_id=issue.get("node_id"),
         github_issue_id=issue.get("id"),
-        github_project_node_id=board_node_id,
-        github_project_url=board_url,
-        github_status_field_id=board_status_field_id,
-        github_status_options=board_status_options,
-        github_project_item_id=item_id,
     )
     db.add(project)
     db.commit()

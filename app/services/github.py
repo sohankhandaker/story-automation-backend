@@ -466,6 +466,62 @@ def add_to_project(issue_node_id: str, cfg: Optional[GHConfig] = None) -> str:
     return data["addProjectV2ItemById"]["item"]["id"]
 
 
+def add_to_project_v2(issue_node_id: str, project_number: int,
+                      cfg: Optional[GHConfig] = None) -> Optional[str]:
+    """Add an issue to a specific GitHub Projects v2 board by project number.
+
+    Returns the project item ID if successful, None otherwise.
+    Used for adding issues to the shared org board.
+    """
+    cfg = cfg or _env_cfg()
+    if not cfg.owner:
+        log.warning("add_to_project_v2: no owner configured")
+        return None
+
+    # Resolve org node ID
+    org_id = _resolve_owner_id(cfg.owner, cfg)
+    if not org_id:
+        log.warning(f"add_to_project_v2: could not resolve org {cfg.owner}")
+        return None
+
+    # Get project node ID from org + number
+    query = """
+    query($org: String!, $number: Int!) {
+      organization(login: $org) {
+        projectV2(number: $number) {
+          id
+        }
+      }
+    }
+    """
+    try:
+        data = _gql(query, {"org": cfg.owner, "number": project_number}, cfg)
+        project_id = (data.get("organization") or {}).get("projectV2", {}).get("id")
+        if not project_id:
+            log.warning(f"add_to_project_v2: project {cfg.owner}/projects/{project_number} not found")
+            return None
+    except Exception as e:
+        log.warning(f"add_to_project_v2: failed to resolve project: {e}")
+        return None
+
+    # Add issue to project
+    mutation = """
+    mutation($projectId: ID!, $contentId: ID!) {
+      addProjectV2ItemById(input: {projectId: $projectId, contentId: $contentId}) {
+        item { id }
+      }
+    }
+    """
+    try:
+        data = _gql(mutation, {"projectId": project_id, "contentId": issue_node_id}, cfg)
+        item_id = data.get("addProjectV2ItemById", {}).get("item", {}).get("id")
+        return item_id
+    except Exception as e:
+        log.warning(f"add_to_project_v2: failed to add issue: {e}")
+        return None
+
+
+
 def remove_issue_from_project(issue_node_id: str,
                                cfg: Optional[GHConfig] = None) -> int:
     """Remove an issue from the configured project board, if present.
