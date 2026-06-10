@@ -954,7 +954,18 @@ def run_brd_approved(note_id: str):
                     log.warning(f"GitHub board status update failed: {e}")
 
         reviewer = note.reviewer_name or note.reviewer_github_username or "the reviewer"
-        if note.github_issue_number:
+
+        # In shared board architecture: post BRD approval to project's main issue
+        # (not the note's own issue, which no longer exists)
+        if project and project.github_issue_number:
+            _safe_add_comment(
+                project.github_issue_number,
+                f"✅ **BRD approved by {reviewer}!**\n\n"
+                f"The BRD is now ready. The creator can proceed to PRD generation.",
+                cfg,
+            )
+        elif note.github_issue_number:
+            # Fallback for notes without a project
             _safe_add_comment(
                 note.github_issue_number,
                 f"✅ BRD approved by {reviewer}!\n\n"
@@ -1257,9 +1268,22 @@ def run_prd_approved(prd_id: str):
             except Exception as e:
                 log.warning(f"PRD board status update failed: {e}")
 
-        if prd.github_issue_number:
+        # Post PRD approval to project's main issue (shared board architecture)
+        reviewer = prd.reviewer_name or prd.reviewer_github_username or "the reviewer"
+        project = db.query(models.Project).filter(models.Project.id == note.project_id).first() if note else None
+        if project and project.github_issue_number:
             try:
-                reviewer = prd.reviewer_name or prd.reviewer_github_username or "the reviewer"
+                _safe_add_comment(
+                    project.github_issue_number,
+                    f"✅ **PRD approved by {reviewer}!**\n\n"
+                    f"The PRD is ready to be sent to the Planner.",
+                    cfg,
+                )
+            except Exception as e:
+                log.warning(f"PRD approval comment failed: {e}")
+        elif prd.github_issue_number:
+            # Fallback for PRDs without a project
+            try:
                 _safe_add_comment(
                     prd.github_issue_number,
                     f"✅ PRD approved by {reviewer}!\n\n"
